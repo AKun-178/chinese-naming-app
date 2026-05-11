@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>视频姓名批量替换</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main class="app">
+      <section class="workspace">
+        <header class="masthead">
+          <div>
+            <p class="kicker">桌面版</p>
+            <h1>视频姓名批量替换</h1>
+          </div>
+          <div class="status" id="status">待开始</div>
+        </header>
+
+        <form id="renderForm" class="grid">
+          <section class="panel span-2">
+            <div class="panel-title">
+              <h2>文件</h2>
+              <span>视频和导出目录都在本机</span>
+            </div>
+            <div class="pickers">
+              <button type="button" class="pick" id="pickVideo">选择模板视频</button>
+              <strong id="videoName">尚未选择</strong>
+              <button type="button" class="pick" id="pickOutput">选择导出文件夹</button>
+              <strong id="outputName">尚未选择</strong>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-title">
+              <h2>名字列表</h2>
+              <span>一行一个，也可以用逗号隔开</span>
+            </div>
+            <textarea id="names" rows="12" placeholder="张三&#10;李四&#10;王五" required></textarea>
+          </section>
+
+          <section class="panel">
+            <div class="panel-title">
+              <h2>画面文字区域</h2>
+              <span>原字所在的位置</span>
+            </div>
+            <div class="fields four">
+              <label>X<input id="x" type="number" value="80" min="0" /></label>
+              <label>Y<input id="y" type="number" value="80" min="0" /></label>
+              <label>宽<input id="width" type="number" value="360" min="8" /></label>
+              <label>高<input id="height" type="number" value="96" min="8" /></label>
+            </div>
+            <div class="fields two">
+              <label>出现秒<input id="start" type="number" value="0" min="0" step="0.01" /></label>
+              <label>结束秒<input id="end" type="number" value="99999" min="0" step="0.01" /></label>
+            </div>
+            <div class="fields two">
+              <label>字号<input id="fontSize" type="number" value="48" min="8" /></label>
+              <label>压缩质量<input id="crf" type="number" value="18" min="10" max="35" /></label>
+            </div>
+            <div class="fields two">
+              <label>字体风格
+                <select id="fontFamily">
+                  <option value="hand">手写感</option>
+                  <option value="kai">楷体</option>
+                  <option value="hei">黑体</option>
+                </select>
+              </label>
+              <label>文字模板
+                <textarea id="visualTextTemplate" rows="3">{name}</textarea>
+              </label>
+            </div>
+            <div class="fields two">
+              <label>文字颜色<input id="fontColor" type="color" value="#ffffff" /></label>
+              <label>遮盖透明度<input id="boxAlpha" type="range" value="0.86" min="0" max="1" step="0.01" /></label>
+            </div>
+            <label>遮盖颜色
+              <select id="boxColor">
+                <option value="black">黑色</option>
+                <option value="white">白色</option>
+                <option value="#1b1b1b">深灰</option>
+                <option value="#f4f1ea">浅米</option>
+                <option value="#1f6f8b">蓝绿</option>
+              </select>
+            </label>
+            <label>对齐
+              <select id="align">
+                <option value="center">居中</option>
+                <option value="left">靠左</option>
+                <option value="right">靠右</option>
+              </select>
+            </label>
+            <button type="button" class="save" id="paperPreset">套用这条视频的黄纸预设</button>
+          </section>
+
+          <section class="panel span-2">
+            <div class="panel-title">
+              <h2>音频替换</h2>
+              <span>替换短句所在的时间段</span>
+            </div>
+            <div class="fields two">
+              <label>替换开始秒<input id="audioStart" type="number" value="0" min="0" step="0.01" /></label>
+              <label>替换结束秒<input id="audioEnd" type="number" value="0" min="0" step="0.01" /></label>
+            </div>
+            <button type="button" class="pick" id="pickAudio">选择同名音频</button>
+            <strong id="audioName">不选则使用 Fish Audio 或只替换画面</strong>
+          </section>
+
+          <section class="panel span-2">
+            <div class="panel-title">
+              <h2>Fish Audio</h2>
+              <span>用户填写自己的 API</span>
+            </div>
+            <label class="toggle">
+              <input id="fishEnabled" type="checkbox" />
+              <span>没有同名音频时，自动调用 Fish Audio 生成</span>
+            </label>
+            <div class="fields two">
+              <label>API Key<input id="fishApiKey" type="password" autocomplete="off" /></label>
+              <label>音色 reference_id<input id="fishReferenceId" type="text" /></label>
+            </div>
+            <div class="fields two">
+              <label>模型
+                <select id="fishModel">
+                  <option value="s2-pro">s2-pro</option>
+                  <option value="s1">s1</option>
+                </select>
+              </label>
+              <label>语速<input id="fishSpeed" type="number" value="1" min="0.5" max="2" step="0.05" /></label>
+            </div>
+            <label>生成句子模板
+              <input id="fishTextTemplate" type="text" value="{name}你吃早饭了吗？" />
+            </label>
+            <button type="button" class="save" id="saveSettings">保存 Fish 设置到本机</button>
+          </section>
+
+          <section class="panel span-2">
+            <div class="panel-title">
+              <h2>AI 手写增强</h2>
+              <span>用阿里云百炼生成更像手写的黄纸补丁</span>
+            </div>
+            <label class="toggle">
+              <input id="aliyunEnabled" type="checkbox" />
+              <span>开启后直接调用图像编辑模型，不单独预览</span>
+            </label>
+            <div class="fields two">
+              <label>百炼 API Key<input id="aliyunApiKey" type="password" autocomplete="off" /></label>
+              <label>地域
+                <select id="aliyunRegion">
+                  <option value="beijing">北京</option>
+                  <option value="intl">新加坡</option>
+                </select>
+              </label>
+            </div>
+            <label>模型
+              <select id="aliyunModel">
+                <option value="qwen-image-2.0">qwen-image-2.0</option>
+                <option value="qwen-image-2.0-pro">qwen-image-2.0-pro</option>
+                <option value="qwen-image-edit-plus">qwen-image-edit-plus</option>
+              </select>
+            </label>
+            <button type="button" class="save" id="saveAiSettings">保存 AI 设置到本机</button>
+          </section>
+
+          <button class="run span-2" type="submit">开始批量生成</button>
+        </form>
+      </section>
+
+      <aside class="results">
+        <div class="panel-title">
+          <h2>进度</h2>
+          <span id="progressText">等待任务</span>
+        </div>
+        <progress id="progress" value="0" max="1"></progress>
+        <div id="warnings" class="warnings"></div>
+        <div id="outputs" class="output-list">
+          <p class="empty">完成后会显示导出位置。</p>
+        </div>
+      </aside>
+    </main>
+
+    <canvas id="textCanvas" hidden></canvas>
+    <script src="./app.js"></script>
+  </body>
+</html>

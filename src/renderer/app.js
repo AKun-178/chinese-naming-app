@@ -1,0 +1,368 @@
+const $ = (selector) => document.querySelector(selector);
+
+const state = {
+  videoPath: "",
+  audioFiles: [],
+  outputDir: "",
+};
+
+const settingFields = [
+  "x",
+  "y",
+  "width",
+  "height",
+  "start",
+  "end",
+  "fontSize",
+  "fontFamily",
+  "visualTextTemplate",
+  "fontColor",
+  "boxAlpha",
+  "boxColor",
+  "align",
+  "audioStart",
+  "audioEnd",
+  "crf",
+];
+
+const fishFields = [
+  "fishApiKey",
+  "fishReferenceId",
+  "fishModel",
+  "fishSpeed",
+  "fishTextTemplate",
+];
+
+function value(id) {
+  return $(`#${id}`).value;
+}
+
+function names() {
+  return $("#names").value
+    .replaceAll(",", "\n")
+    .split(/\r?\n/u)
+    .map((name) => name.trim())
+    .filter(Boolean);
+}
+
+function settings() {
+  return Object.fromEntries(settingFields.map((id) => [id, value(id)]));
+}
+
+function fishSettings() {
+  return {
+    enabled: $("#fishEnabled").checked,
+    apiKey: value("fishApiKey").trim(),
+    referenceId: value("fishReferenceId").trim(),
+    model: value("fishModel"),
+    speed: Number(value("fishSpeed") || 1),
+    textTemplate: value("fishTextTemplate").trim(),
+  };
+}
+
+function aiSettings() {
+  return {
+    enabled: $("#aliyunEnabled").checked,
+    apiKey: value("aliyunApiKey").trim(),
+    model: value("aliyunModel"),
+    region: value("aliyunRegion"),
+  };
+}
+
+function savedSettings() {
+  return {
+    ...fishSettings(),
+    aliyunApiKey: value("aliyunApiKey").trim(),
+    aliyunModel: value("aliyunModel"),
+    aliyunRegion: value("aliyunRegion"),
+  };
+}
+
+function setStatus(text) {
+  $("#status").textContent = text;
+}
+
+function basename(filePath) {
+  return String(filePath || "").split(/[\\/]/u).pop() || "";
+}
+
+function fitLines(ctx, text, width, fontSize) {
+  const chars = Array.from(text);
+  const lines = [];
+  let line = "";
+  for (const char of chars) {
+    const next = line + char;
+    if (ctx.measureText(next).width <= width * 0.94 || !line) {
+      line = next;
+    } else {
+      lines.push(line);
+      line = char;
+    }
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+
+function seededRandom(seed) {
+  let value = seed >>> 0;
+  return () => {
+    value = (value * 1664525 + 1013904223) >>> 0;
+    return value / 4294967296;
+  };
+}
+
+function textSeed(text) {
+  let seed = 2166136261;
+  for (const char of text) {
+    seed ^= char.codePointAt(0);
+    seed = Math.imul(seed, 16777619);
+  }
+  return seed >>> 0;
+}
+
+function fontStack(kind, fontSize) {
+  const stacks = {
+    hand: `"Hanzipen SC", "HanziPen SC", "Xingkai SC", "STXingkai", "Yuanti SC", "Kaiti SC", "KaiTi", cursive`,
+    kai: `"Kaiti SC", "STKaiti", "KaiTi", "SimKai", serif`,
+    hei: `"PingFang SC", "Microsoft YaHei", "SimHei", sans-serif`,
+  };
+  return `600 ${fontSize}px ${stacks[kind] || stacks.hand}`;
+}
+
+function hexToRgb(hex) {
+  const clean = String(hex || "#edbd0e").replace("#", "");
+  const value = clean.length === 3 ? clean.split("").map((ch) => ch + ch).join("") : clean;
+  return {
+    r: parseInt(value.slice(0, 2), 16) || 237,
+    g: parseInt(value.slice(2, 4), 16) || 189,
+    b: parseInt(value.slice(4, 6), 16) || 14,
+  };
+}
+
+function drawPaperPatch(ctx, width, height, color, seed) {
+  const random = seededRandom(seed);
+  const { r, g, b } = hexToRgb(color);
+  const imageData = ctx.createImageData(width, height);
+  const data = imageData.data;
+  for (let y = 0; y < height; y += 1) {
+    const t = height <= 1 ? 0 : y / (height - 1);
+    for (let x = 0; x < width; x += 1) {
+      const i = (y * width + x) * 4;
+      const edge = Math.min(x, y, width - 1 - x, height - 1 - y);
+      const edgeAlpha = Math.max(0, Math.min(1, edge / 8));
+      const noise = Math.floor(random() * 9) - 4;
+      data[i] = Math.max(0, Math.min(255, r + noise + Math.round(8 * (0.5 - t))));
+      data[i + 1] = Math.max(0, Math.min(255, g + noise + Math.round(14 * (0.5 - t))));
+      data[i + 2] = Math.max(0, Math.min(255, b + noise));
+      data[i + 3] = Math.round(242 * edgeAlpha);
+    }
+  }
+  ctx.putImageData(imageData, 0, 0);
+}
+
+function drawHandLine(ctx, line, fontSize, centerX, y, kind, random) {
+  ctx.textBaseline = "middle";
+  ctx.textAlign = "left";
+  ctx.font = fontStack(kind, fontSize);
+  const tracking = line.length > 6 ? -2 : 0;
+  const widths = Array.from(line).map((char) => ctx.measureText(char).width);
+  const total = widths.reduce((sum, width) => sum + width, 0) + tracking * Math.max(0, line.length - 1);
+  let x = centerX - total / 2;
+  Array.from(line).forEach((char, index) => {
+    const jitterX = (random() - 0.5) * 2.2;
+    const jitterY = (random() - 0.5) * 2.0;
+    const angle = (random() - 0.5) * 0.12;
+    ctx.save();
+    ctx.translate(x + jitterX + widths[index] / 2, y + jitterY);
+    ctx.rotate(angle);
+    ctx.fillStyle = "rgba(18, 12, 6, 0.24)";
+    ctx.fillText(char, -widths[index] / 2 + 0.4, 0.4);
+    ctx.fillStyle = "rgba(31, 22, 10, 0.92)";
+    ctx.fillText(char, -widths[index] / 2, 0);
+    ctx.restore();
+    x += widths[index] + tracking;
+  });
+}
+
+function createOverlay(name, current) {
+  const canvas = $("#textCanvas");
+  const width = Math.max(8, Math.round(Number(current.width) || 360));
+  const height = Math.max(8, Math.round(Number(current.height) || 96));
+  const displayText = String(current.visualTextTemplate || "{name}").replaceAll("{name}", name);
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, width, height);
+  if (current.fontFamily === "hand") {
+    drawPaperPatch(ctx, width, height, current.boxColor || "#edbd0e", textSeed(displayText));
+  }
+  let fontSize = Math.max(8, Math.round(Number(current.fontSize) || 48));
+  let lines = [];
+  let lineHeight = 0;
+
+  while (fontSize > 8) {
+    ctx.font = fontStack(current.fontFamily, fontSize);
+    lines = displayText
+      .split(/\r?\n/u)
+      .flatMap((line) => fitLines(ctx, line, width, fontSize));
+    lineHeight = Math.round(fontSize * 1.2);
+    const maxWidth = Math.max(...lines.map((line) => ctx.measureText(line).width));
+    if (maxWidth <= width * 0.96 && lines.length * lineHeight <= height * 0.9) break;
+    fontSize -= 2;
+  }
+
+  const totalHeight = lines.length * lineHeight;
+  const startY = (height - totalHeight) / 2 + lineHeight / 2;
+  const x =
+    current.align === "left"
+      ? Math.round(width * 0.04)
+      : current.align === "right"
+        ? Math.round(width * 0.96)
+        : Math.round(width / 2);
+
+  lines.forEach((line, index) => {
+    const lineFontSize =
+      current.fontFamily === "hand" && lines.length === 3 && index === 1
+        ? Math.round(fontSize * 1.35)
+        : fontSize;
+    if (current.fontFamily === "hand") {
+      drawHandLine(ctx, line, lineFontSize, x, startY + index * lineHeight, current.fontFamily, seededRandom(textSeed(`${displayText}-${index}`)));
+    } else {
+      ctx.font = fontStack(current.fontFamily, lineFontSize);
+      ctx.fillStyle = current.fontColor || "#ffffff";
+      ctx.textBaseline = "middle";
+      ctx.textAlign = current.align || "center";
+      ctx.fillText(line, x, startY + index * lineHeight);
+    }
+  });
+  return canvas.toDataURL("image/png");
+}
+
+function renderWarnings(warnings) {
+  $("#warnings").innerHTML = "";
+  for (const warning of warnings || []) {
+    const item = document.createElement("div");
+    item.className = "warning";
+    item.textContent = warning;
+    $("#warnings").appendChild(item);
+  }
+}
+
+function renderOutputs(result) {
+  const root = $("#outputs");
+  root.innerHTML = "";
+  const head = document.createElement("article");
+  head.className = "output";
+  head.innerHTML = `<h3>导出文件夹</h3><code>${result.outputDir}</code>`;
+  root.appendChild(head);
+
+  for (const output of result.outputs || []) {
+    const card = document.createElement("article");
+    card.className = "output";
+    const audioText = output.generatedByFish ? "Fish 生成音频" : output.audioMatched ? "已换音频" : "原音频";
+    const visualText = output.generatedByAi ? "AI 手写增强" : "本地手写";
+    const stateText = `${visualText} · ${audioText}`;
+    card.innerHTML = `<h3>${output.name} · ${stateText}</h3><code>${output.outputPath}</code>`;
+    root.appendChild(card);
+  }
+}
+
+window.desktopApi.onProgress((data) => {
+  $("#progressText").textContent = data.message || "";
+  $("#progress").max = data.total || 1;
+  $("#progress").value = data.index || 0;
+});
+
+$("#pickVideo").addEventListener("click", async () => {
+  const file = await window.desktopApi.selectVideo();
+  if (file) {
+    state.videoPath = file;
+    $("#videoName").textContent = basename(file);
+  }
+});
+
+$("#pickAudio").addEventListener("click", async () => {
+  state.audioFiles = await window.desktopApi.selectAudio();
+  $("#audioName").textContent = state.audioFiles.length ? `已选择 ${state.audioFiles.length} 个音频文件` : "不选则使用 Fish Audio 或只替换画面";
+});
+
+$("#pickOutput").addEventListener("click", async () => {
+  const folder = await window.desktopApi.selectOutput();
+  if (folder) {
+    state.outputDir = folder;
+    $("#outputName").textContent = folder;
+  }
+});
+
+$("#saveSettings").addEventListener("click", async () => {
+  await window.desktopApi.writeSettings(savedSettings());
+  setStatus("设置已保存");
+});
+
+$("#saveAiSettings").addEventListener("click", async () => {
+  await window.desktopApi.writeSettings(savedSettings());
+  setStatus("设置已保存");
+});
+
+$("#paperPreset").addEventListener("click", () => {
+  $("#x").value = "184";
+  $("#y").value = "490";
+  $("#width").value = "116";
+  $("#height").value = "123";
+  $("#start").value = "0";
+  $("#end").value = "99999";
+  $("#fontSize").value = "16";
+  $("#fontFamily").value = "hand";
+  $("#visualTextTemplate").value = "2026年5月11号\n{name}\n19970525";
+  $("#fontColor").value = "#23160a";
+  $("#boxColor").value = "#edbd0e";
+  $("#boxAlpha").value = "0";
+  $("#align").value = "center";
+  setStatus("黄纸预设已套用");
+});
+
+$("#renderForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const run = $(".run");
+  const list = names();
+  const current = settings();
+  const overlays = Object.fromEntries(list.map((name) => [name, createOverlay(name, current)]));
+
+  run.disabled = true;
+  setStatus("生成中");
+  renderWarnings([]);
+  $("#outputs").innerHTML = '<p class="empty">正在生成，视频越多等待越久。</p>';
+
+  try {
+    const result = await window.desktopApi.renderBatch({
+      videoPath: state.videoPath,
+      audioFiles: state.audioFiles,
+      outputDir: state.outputDir,
+      names: list,
+      settings: current,
+      fish: fishSettings(),
+      ai: aiSettings(),
+      overlays,
+    });
+    renderWarnings(result.warnings);
+    renderOutputs(result);
+    setStatus("已完成");
+  } catch (error) {
+    $("#outputs").innerHTML = `<p class="empty">${error.message}</p>`;
+    setStatus("出错");
+  } finally {
+    run.disabled = false;
+  }
+});
+
+(async function init() {
+  const saved = await window.desktopApi.readSettings();
+  $("#fishApiKey").value = saved.fishApiKey || "";
+  $("#fishReferenceId").value = saved.fishReferenceId || "";
+  $("#fishModel").value = saved.fishModel || "s2-pro";
+  $("#fishTextTemplate").value = saved.fishTextTemplate || "{name}你吃早饭了吗？";
+  $("#fishSpeed").value = saved.fishSpeed || 1;
+  $("#aliyunApiKey").value = saved.aliyunApiKey || "";
+  $("#aliyunModel").value = saved.aliyunModel || "qwen-image-2.0";
+  $("#aliyunRegion").value = saved.aliyunRegion || "beijing";
+})();
