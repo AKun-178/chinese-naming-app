@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, net } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, net, shell } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const fsp = require("fs/promises");
@@ -10,10 +10,15 @@ const ffmpegStatic = require("ffmpeg-static");
 const ffprobeStatic = require("ffprobe-static");
 
 let mainWindow;
+let activeRenderJob = null;
 
 const DEFAULT_VISUAL_TEXT_TEMPLATE = "{date}\n{name}\n{birthdayDigits}";
 const DEFAULT_FISH_TEXT_TEMPLATE =
   "{name}缘主你好，我是{masterName}道长，你的生日是{birthdayText}，很高兴在这里与你结缘相遇，接下来由我为你详细解析。";
+const EXTERNAL_LINKS = {
+  fishApi: "https://fish.audio/app/api-keys/",
+  aliyunApi: "https://bailian.console.aliyun.com/?apiKey=1#/api-key",
+};
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -204,25 +209,77 @@ function colorToFfmpeg(value) {
   return color.startsWith("#") ? `0x${color.slice(1)}` : color;
 }
 
-function runProcess(command, args, onProgress) {
+function createRenderJob(sender) {
+  return {
+    sender,
+    cancelled: false,
+    children: new Set(),
+    apiControllers: new Set(),
+  };
+}
+
+function cancelRenderJob(job) {
+  if (!job) return false;
+  job.cancelled = true;
+  for (const controller of job.apiControllers) {
+    controller.abort();
+  }
+  for (const child of job.children) {
+    try {
+      child.kill("SIGTERM");
+    } catch {
+      // The process may have exited between the click and the kill request.
+    }
+  }
+  return true;
+}
+
+function assertNotCancelled(job) {
+  if (job?.cancelled) throw new Error("任务已中断。");
+}
+
+function runProcess(command, args, onProgress, job) {
   return new Promise((resolve, reject) => {
+    if (job?.cancelled) {
+      reject(new Error("任务已中断。"));
+      return;
+    }
+
     const child = spawn(command, args, { windowsHide: true });
+    if (job) job.children.add(child);
     let stderr = "";
+    let settled = false;
+
+    const finish = (handler, value) => {
+      if (settled) return;
+      settled = true;
+      if (job) job.children.delete(child);
+      handler(value);
+    };
+
     child.stderr.on("data", (chunk) => {
       const text = chunk.toString();
       stderr += text;
       if (onProgress) onProgress(text);
     });
-    child.on("error", reject);
+    child.on("error", (error) => {
+      finish(reject, job?.cancelled ? new Error("任务已中断。") : error);
+    });
     child.on("close", (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(stderr.slice(-3000) || `命令失败：${code}`));
+      if (job?.cancelled) finish(reject, new Error("任务已中断。"));
+      else if (code === 0) finish(resolve);
+      else finish(reject, new Error(stderr.slice(-3000) || `命令失败：${code}`));
     });
   });
 }
 
-async function mediaDuration(filePath) {
+async function mediaDuration(filePath, job) {
   return new Promise((resolve, reject) => {
+    if (job?.cancelled) {
+      reject(new Error("任务已中断。"));
+      return;
+    }
+
     const args = [
       "-v",
       "error",
@@ -233,20 +290,38 @@ async function mediaDuration(filePath) {
       filePath,
     ];
     const child = spawn(ffprobePath(), args, { windowsHide: true });
+    if (job) job.children.add(child);
     let stdout = "";
     let stderr = "";
+    let settled = false;
+
+    const finish = (handler, value) => {
+      if (settled) return;
+      settled = true;
+      if (job) job.children.delete(child);
+      handler(value);
+    };
+
     child.stdout.on("data", (chunk) => (stdout += chunk.toString()));
     child.stderr.on("data", (chunk) => (stderr += chunk.toString()));
-    child.on("error", reject);
+    child.on("error", (error) => {
+      finish(reject, job?.cancelled ? new Error("任务已中断。") : error);
+    });
     child.on("close", (code) => {
-      if (code === 0) resolve(Number(stdout.trim()) || 0);
-      else reject(new Error(stderr || "无法读取媒体时长。"));
+      if (job?.cancelled) finish(reject, new Error("任务已中断。"));
+      else if (code === 0) finish(resolve, Number(stdout.trim()) || 0);
+      else finish(reject, new Error(stderr || "无法读取媒体时长。"));
     });
   });
 }
 
-async function hasAudio(filePath) {
+async function hasAudio(filePath, job) {
   return new Promise((resolve, reject) => {
+    if (job?.cancelled) {
+      reject(new Error("任务已中断。"));
+      return;
+    }
+
     const args = [
       "-v",
       "error",
@@ -259,10 +334,23 @@ async function hasAudio(filePath) {
       filePath,
     ];
     const child = spawn(ffprobePath(), args, { windowsHide: true });
+    if (job) job.children.add(child);
     let stdout = "";
+    let settled = false;
+    const finish = (handler, value) => {
+      if (settled) return;
+      settled = true;
+      if (job) job.children.delete(child);
+      handler(value);
+    };
     child.stdout.on("data", (chunk) => (stdout += chunk.toString()));
-    child.on("error", reject);
-    child.on("close", () => resolve(Boolean(stdout.trim())));
+    child.on("error", (error) => {
+      finish(reject, job?.cancelled ? new Error("任务已中断。") : error);
+    });
+    child.on("close", () => {
+      if (job?.cancelled) finish(reject, new Error("任务已中断。"));
+      else finish(resolve, Boolean(stdout.trim()));
+    });
   });
 }
 
@@ -297,25 +385,29 @@ function networkHint(provider) {
   return "请确认当前网络可用后再试。";
 }
 
-async function requestApi(url, options = {}, provider = "API", timeoutMs = 120000) {
+async function requestApi(url, options = {}, provider = "API", timeoutMs = 120000, job = null) {
+  assertNotCancelled(job);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const request = typeof net?.fetch === "function" ? net.fetch.bind(net) : fetch;
+  if (job) job.apiControllers.add(controller);
 
   try {
     return await request(url, { ...options, signal: controller.signal });
   } catch (error) {
+    if (job?.cancelled) throw new Error("任务已中断。");
     const detail = error?.name === "AbortError"
       ? "请求超时"
       : error?.cause?.message || error?.message || String(error);
     throw new Error(`${provider} 请求失败：无法连接 ${apiHost(url)}。${networkHint(provider)} 原始错误：${detail}`);
   } finally {
     clearTimeout(timer);
+    if (job) job.apiControllers.delete(controller);
   }
 }
 
-async function downloadFile(url, filePath) {
-  const response = await requestApi(url, {}, "图片下载", 120000);
+async function downloadFile(url, filePath, job) {
+  const response = await requestApi(url, {}, "图片下载", 120000, job);
   if (!response.ok) {
     const detail = await response.text();
     throw new Error(`下载生成图片失败：HTTP ${response.status} ${detail}`);
@@ -330,13 +422,14 @@ function dashscopeEndpoint(region) {
     : "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation";
 }
 
-async function extractPatchReference({ videoPath, settings, jobDir, name }) {
+async function extractPatchReference({ videoPath, settings, jobDir, name, job }) {
+  assertNotCancelled(job);
   const x = Math.max(0, Math.round(asNumber(settings.x, 80)));
   const y = Math.max(0, Math.round(asNumber(settings.y, 80)));
   const width = Math.max(8, Math.round(asNumber(settings.width, 360)));
   const height = Math.max(8, Math.round(asNumber(settings.height, 96)));
   const start = Math.max(0, asNumber(settings.start, 0));
-  const duration = await mediaDuration(videoPath);
+  const duration = await mediaDuration(videoPath, job);
   const shotTime = Math.max(0, Math.min(duration > 0 ? duration - 0.2 : start + 5, start + 5));
   const cropPath = path.join(jobDir, `${safeName(name)}_ai_reference.png`);
   const scaleWidth = Math.max(512, Math.round((width / height) * 512));
@@ -352,7 +445,7 @@ async function extractPatchReference({ videoPath, settings, jobDir, name }) {
     "-vf",
     `crop=${width}:${height}:${x}:${y},scale=${scaleWidth}:${scaleHeight}:flags=lanczos`,
     cropPath,
-  ]);
+  ], null, job);
   return { cropPath, scaleWidth, scaleHeight, width, height };
 }
 
@@ -360,7 +453,8 @@ function visualTextForCustomer(template, customer) {
   return applyTemplate(template || DEFAULT_VISUAL_TEXT_TEMPLATE, customer);
 }
 
-async function aliyunImageEditPatch({ videoPath, customer, settings, ai, jobDir }) {
+async function aliyunImageEditPatch({ videoPath, customer, settings, ai, jobDir, job }) {
+  assertNotCancelled(job);
   if (!ai?.apiKey) throw new Error("请填写阿里云百炼 API Key。");
   const model = ai.model || "qwen-image-2.0";
   const name = customer.name;
@@ -369,6 +463,7 @@ async function aliyunImageEditPatch({ videoPath, customer, settings, ai, jobDir 
     settings,
     jobDir,
     name,
+    job,
   });
   const referenceImage = await encodeImageDataUrl(cropPath);
   const visualText = visualTextForCustomer(settings.visualTextTemplate, customer);
@@ -405,7 +500,7 @@ async function aliyunImageEditPatch({ videoPath, customer, settings, ai, jobDir 
         size: `${scaleWidth}*${scaleHeight}`,
       },
     }),
-  }, "阿里云百炼", 180000);
+  }, "阿里云百炼", 180000, job);
 
   const payload = await response.json().catch(() => null);
   if (!response.ok || payload?.code) {
@@ -416,7 +511,8 @@ async function aliyunImageEditPatch({ videoPath, customer, settings, ai, jobDir 
 
   const rawPath = path.join(jobDir, `${safeName(name)}_ai_raw.png`);
   const patchPath = path.join(jobDir, `${safeName(name)}_ai_patch.png`);
-  await downloadFile(imageUrl, rawPath);
+  await downloadFile(imageUrl, rawPath, job);
+  assertNotCancelled(job);
   await runProcess(ffmpegPath(), [
     "-y",
     "-i",
@@ -424,11 +520,12 @@ async function aliyunImageEditPatch({ videoPath, customer, settings, ai, jobDir 
     "-vf",
     `scale=${width}:${height}:flags=lanczos,format=rgba`,
     patchPath,
-  ]);
+  ], null, job);
   return patchPath;
 }
 
-async function fishAudioTts({ text, apiKey, referenceId, model, speed, outputPath }) {
+async function fishAudioTts({ text, apiKey, referenceId, model, speed, outputPath, job }) {
+  assertNotCancelled(job);
   if (!apiKey) throw new Error("请填写 Fish Audio API Key。");
   if (!referenceId) throw new Error("请填写 Fish Audio 音色 reference_id。");
 
@@ -460,7 +557,7 @@ async function fishAudioTts({ text, apiKey, referenceId, model, speed, outputPat
       min_chunk_length: 50,
       condition_on_previous_chunks: true,
     }),
-  }, "Fish Audio", 180000);
+  }, "Fish Audio", 180000, job);
 
   if (!response.ok) {
     const detail = await response.text();
@@ -485,10 +582,11 @@ function audioClipMap(files) {
   return map;
 }
 
-async function renderOne({ videoPath, name, overlayDataUrl, overlayFilePath, audioClip, settings, outputDir, jobDir }) {
+async function renderOne({ videoPath, name, overlayDataUrl, overlayFilePath, audioClip, settings, outputDir, jobDir, job }) {
+  assertNotCancelled(job);
   const id = crypto.randomUUID();
   const clean = safeName(name);
-  const duration = await mediaDuration(videoPath);
+  const duration = await mediaDuration(videoPath, job);
   const overlayPath = overlayFilePath || path.join(jobDir, `${id}_${clean}.png`);
   if (!overlayFilePath) await writeDataUrl(overlayDataUrl, overlayPath);
 
@@ -523,7 +621,7 @@ async function renderOne({ videoPath, name, overlayDataUrl, overlayFilePath, aud
     `[1:v]format=rgba[text];[boxed][text]overlay=x=${x}:y=${y}:enable='${enable}':shortest=1[v]`;
   let audioArgs = ["-map", "0:a?", "-c:a", "copy"];
 
-  if (audioClip && audioEnd > audioStart && (await hasAudio(videoPath))) {
+  if (audioClip && audioEnd > audioStart && (await hasAudio(videoPath, job))) {
     const segment = audioEnd - audioStart;
     const delayMs = Math.round(audioStart * 1000);
     args.push("-i", audioClip);
@@ -554,12 +652,29 @@ async function renderOne({ videoPath, name, overlayDataUrl, overlayFilePath, aud
     outputPath,
   );
 
-  await runProcess(ffmpegPath(), args);
+  await runProcess(ffmpegPath(), args, null, job);
   return outputPath;
 }
 
 ipcMain.handle("settings:read", readSettings);
 ipcMain.handle("settings:write", async (_event, settings) => writeSettings(settings));
+
+ipcMain.handle("open:external", async (_event, target) => {
+  const url = EXTERNAL_LINKS[target] || String(target || "");
+  if (!/^https:\/\//u.test(url)) throw new Error("无法打开这个链接。");
+  await shell.openExternal(url);
+  return true;
+});
+
+ipcMain.handle("render:cancel", async (event) => {
+  if (!activeRenderJob || activeRenderJob.sender !== event.sender) return false;
+  event.sender.send("render:progress", {
+    index: 0,
+    total: 1,
+    message: "正在中断当前任务",
+  });
+  return cancelRenderJob(activeRenderJob);
+});
 
 ipcMain.handle("dialog:video", async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
@@ -588,89 +703,105 @@ ipcMain.handle("dialog:output", async () => {
 });
 
 ipcMain.handle("render:batch", async (event, payload) => {
+  if (activeRenderJob) throw new Error("已有任务正在生成，请先中断或等待完成。");
+
   const customers = customersFromPayload(payload);
   if (!payload.videoPath) throw new Error("请先选择模板视频。");
   if (!customers.length) throw new Error("请至少输入一个客户姓名。");
   if (!payload.outputDir) throw new Error("请选择导出文件夹。");
 
+  const renderJob = createRenderJob(event.sender);
+  activeRenderJob = renderJob;
   const batchId = new Date().toISOString().replace(/[:.]/g, "-");
   const outputDir = path.join(payload.outputDir, `视频批量替换_${batchId}`);
   const jobDir = path.join(os.tmpdir(), `video-name-batcher-${batchId}`);
-  await fsp.mkdir(outputDir, { recursive: true });
-  await fsp.mkdir(jobDir, { recursive: true });
 
-  const clips = audioClipMap(payload.audioFiles || []);
-  const outputs = [];
-  const warnings = [];
+  try {
+    await fsp.mkdir(outputDir, { recursive: true });
+    await fsp.mkdir(jobDir, { recursive: true });
 
-  for (let index = 0; index < customers.length; index += 1) {
-    const customer = customers[index];
-    const name = customer.name;
-    event.sender.send("render:progress", {
-      index,
-      total: customers.length,
-      name,
-      message: `正在处理 ${name}`,
-    });
+    const clips = audioClipMap(payload.audioFiles || []);
+    const outputs = [];
+    const warnings = [];
 
-    let audioClip = clips.get(safeName(name));
-    let generatedByFish = false;
-    const audioMatched = Boolean(audioClip);
-
-    if (!audioClip && payload.fish?.enabled) {
-      const text = applyTemplate(payload.fish.textTemplate || DEFAULT_FISH_TEXT_TEMPLATE, customer);
-      audioClip = path.join(jobDir, `${safeName(name)}_fish.mp3`);
-      await fishAudioTts({
-        text,
-        apiKey: payload.fish.apiKey,
-        referenceId: payload.fish.referenceId,
-        model: payload.fish.model,
-        speed: payload.fish.speed,
-        outputPath: audioClip,
-      });
-      generatedByFish = true;
-    } else if ((payload.audioFiles || []).length && !audioClip) {
-      warnings.push(`${name} 没有找到同名音频文件，已只替换画面文字。`);
-    }
-
-    let overlayFilePath = null;
-    let generatedByAi = false;
-    if (payload.ai?.enabled) {
+    for (let index = 0; index < customers.length; index += 1) {
+      assertNotCancelled(renderJob);
+      const customer = customers[index];
+      const name = customer.name;
       event.sender.send("render:progress", {
         index,
         total: customers.length,
         name,
-        message: `AI 正在生成 ${name} 的手写补丁`,
+        message: `正在处理 ${name}`,
       });
-      overlayFilePath = await aliyunImageEditPatch({
+
+      let audioClip = clips.get(safeName(name));
+      let generatedByFish = false;
+      const audioMatched = Boolean(audioClip);
+
+      if (!audioClip && payload.fish?.enabled) {
+        const text = applyTemplate(payload.fish.textTemplate || DEFAULT_FISH_TEXT_TEMPLATE, customer);
+        audioClip = path.join(jobDir, `${safeName(name)}_fish.mp3`);
+        await fishAudioTts({
+          text,
+          apiKey: payload.fish.apiKey,
+          referenceId: payload.fish.referenceId,
+          model: payload.fish.model,
+          speed: payload.fish.speed,
+          outputPath: audioClip,
+          job: renderJob,
+        });
+        generatedByFish = true;
+      } else if ((payload.audioFiles || []).length && !audioClip) {
+        warnings.push(`${name} 没有找到同名音频文件，已只替换画面文字。`);
+      }
+
+      let overlayFilePath = null;
+      let generatedByAi = false;
+      if (payload.ai?.enabled) {
+        event.sender.send("render:progress", {
+          index,
+          total: customers.length,
+          name,
+          message: `AI 正在生成 ${name} 的手写补丁`,
+        });
+        overlayFilePath = await aliyunImageEditPatch({
+          videoPath: payload.videoPath,
+          customer,
+          settings: payload.settings,
+          ai: payload.ai,
+          jobDir,
+          job: renderJob,
+        });
+        generatedByAi = true;
+      }
+
+      assertNotCancelled(renderJob);
+      const outputPath = await renderOne({
         videoPath: payload.videoPath,
-        customer,
+        name,
+        overlayDataUrl: payload.overlays?.[customer.id] || payload.overlays?.[name],
+        overlayFilePath,
+        audioClip,
         settings: payload.settings,
-        ai: payload.ai,
+        outputDir,
         jobDir,
+        job: renderJob,
       });
-      generatedByAi = true;
+
+      outputs.push({ name, outputPath, audioMatched, generatedByFish, generatedByAi });
     }
 
-    const outputPath = await renderOne({
-      videoPath: payload.videoPath,
-      name,
-      overlayDataUrl: payload.overlays?.[customer.id] || payload.overlays?.[name],
-      overlayFilePath,
-      audioClip,
-      settings: payload.settings,
-      outputDir,
-      jobDir,
+    event.sender.send("render:progress", {
+      index: customers.length,
+      total: customers.length,
+      message: "已完成",
     });
 
-    outputs.push({ name, outputPath, audioMatched, generatedByFish, generatedByAi });
+    return { outputDir, outputs, warnings };
+  } finally {
+    if (activeRenderJob === renderJob) {
+      activeRenderJob = null;
+    }
   }
-
-  event.sender.send("render:progress", {
-    index: customers.length,
-    total: customers.length,
-    message: "已完成",
-  });
-
-  return { outputDir, outputs, warnings };
 });

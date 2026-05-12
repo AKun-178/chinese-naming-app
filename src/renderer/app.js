@@ -4,6 +4,7 @@ const state = {
   videoPath: "",
   audioFiles: [],
   outputDir: "",
+  toastTimer: null,
 };
 
 const DEFAULT_VISUAL_TEXT_TEMPLATE = "{date}\n{name}\n{birthdayDigits}";
@@ -156,6 +157,21 @@ function savedSettings() {
 
 function setStatus(text) {
   $("#status").textContent = text;
+}
+
+function showToast(text) {
+  const toast = $("#toast");
+  toast.textContent = text;
+  toast.hidden = false;
+  clearTimeout(state.toastTimer);
+  state.toastTimer = setTimeout(() => {
+    toast.hidden = true;
+  }, 2600);
+}
+
+function setRendering(isRendering) {
+  $(".run").disabled = isRendering;
+  $("#cancelRender").disabled = !isRendering;
 }
 
 function basename(filePath) {
@@ -372,12 +388,32 @@ $("#pickOutput").addEventListener("click", async () => {
 
 $("#saveSettings").addEventListener("click", async () => {
   await window.desktopApi.writeSettings(savedSettings());
-  setStatus("设置已保存");
+  setStatus("Fish 设置已保存");
+  showToast("Fish 设置保存成功");
 });
 
 $("#saveAiSettings").addEventListener("click", async () => {
   await window.desktopApi.writeSettings(savedSettings());
-  setStatus("设置已保存");
+  setStatus("AI 设置已保存");
+  showToast("AI 设置保存成功");
+});
+
+$("#openFishApi").addEventListener("click", async () => {
+  await window.desktopApi.openExternal("fishApi");
+});
+
+$("#openAliyunApi").addEventListener("click", async () => {
+  await window.desktopApi.openExternal("aliyunApi");
+});
+
+$("#cancelRender").addEventListener("click", async () => {
+  $("#cancelRender").disabled = true;
+  setStatus("正在中断");
+  $("#progressText").textContent = "正在中断当前任务";
+  const cancelled = await window.desktopApi.cancelRender();
+  if (!cancelled) {
+    setStatus("没有运行中的任务");
+  }
 });
 
 $("#paperPreset").addEventListener("click", () => {
@@ -400,12 +436,11 @@ $("#paperPreset").addEventListener("click", () => {
 
 $("#renderForm").addEventListener("submit", async (event) => {
   event.preventDefault();
-  const run = $(".run");
   const list = customerRows();
   const current = settings();
   const overlays = Object.fromEntries(list.map((customer) => [customer.id, createOverlay(customer, current)]));
 
-  run.disabled = true;
+  setRendering(true);
   setStatus("生成中");
   renderWarnings([]);
   $("#outputs").innerHTML = '<p class="empty">正在生成，视频越多等待越久。</p>';
@@ -426,10 +461,11 @@ $("#renderForm").addEventListener("submit", async (event) => {
     renderOutputs(result);
     setStatus("已完成");
   } catch (error) {
-    $("#outputs").innerHTML = `<p class="empty">${error.message}</p>`;
-    setStatus("出错");
+    const message = error.message || String(error);
+    $("#outputs").innerHTML = `<p class="empty">${message}</p>`;
+    setStatus(message.includes("中断") ? "已中断" : "出错");
   } finally {
-    run.disabled = false;
+    setRendering(false);
   }
 });
 

@@ -132,7 +132,10 @@
             <label>生成句子模板
               <textarea id="fishTextTemplate" rows="3">{name}缘主你好，我是{masterName}道长，你的生日是{birthdayText}，很高兴在这里与你结缘相遇，接下来由我为你详细解析。</textarea>
             </label>
-            <button type="button" class="save" id="saveSettings">保存 Fish 设置到本机</button>
+            <div class="button-row">
+              <button type="button" class="save" id="saveSettings">保存 Fish 设置</button>
+              <button type="button" class="save" id="openFishApi">获取 Fish API</button>
+            </div>
           </section>
 
           <section class="panel span-2">
@@ -160,10 +163,16 @@
                 <option value="qwen-image-edit-plus">qwen-image-edit-plus</option>
               </select>
             </label>
-            <button type="button" class="save" id="saveAiSettings">保存 AI 设置到本机</button>
+            <div class="button-row">
+              <button type="button" class="save" id="saveAiSettings">保存 AI 设置</button>
+              <button type="button" class="save" id="openAliyunApi">获取百炼 API</button>
+            </div>
           </section>
 
-          <button class="run span-2" type="submit">开始批量生成</button>
+          <div class="run-row span-2">
+            <button class="run" type="submit">开始批量生成</button>
+            <button class="danger" type="button" id="cancelRender" disabled>中断生成</button>
+          </div>
         </form>
       </section>
 
@@ -181,6 +190,7 @@
     </main>
 
     <canvas id="textCanvas" hidden></canvas>
+    <div class="toast" id="toast" hidden></div>
     <script src="./app.js"></script>
   </body>
 </html>

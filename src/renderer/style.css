@@ -192,7 +192,8 @@ textarea {
 
 .pick,
 .save,
-.run {
+.run,
+.danger {
   min-height: 42px;
   border: 0;
   border-radius: 8px;
@@ -207,15 +208,34 @@ textarea {
 }
 
 .run {
+  width: 100%;
   min-height: 52px;
   color: #fff;
   background: var(--accent);
   font-size: 16px;
 }
 
+.danger {
+  color: #7b351f;
+  background: rgba(183, 85, 50, 0.12);
+}
+
 .run:disabled {
   cursor: wait;
   opacity: 0.62;
+}
+
+.danger:disabled {
+  cursor: not-allowed;
+  opacity: 0.46;
+}
+
+.button-row,
+.run-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 12px;
 }
 
 strong {
@@ -280,11 +300,28 @@ progress {
   font-size: 12px;
 }
 
+.toast {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 10;
+  max-width: min(360px, calc(100vw - 48px));
+  border: 1px solid rgba(23, 109, 116, 0.22);
+  border-radius: 8px;
+  padding: 12px 14px;
+  color: var(--ink);
+  background: #f4fbf9;
+  box-shadow: var(--shadow);
+  font-size: 14px;
+}
+
 @media (max-width: 980px) {
   .app,
   .grid,
   .fields.two,
-  .fields.four {
+  .fields.four,
+  .button-row,
+  .run-row {
     grid-template-columns: 1fr;
   }
 
