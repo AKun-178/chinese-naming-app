@@ -6,6 +6,10 @@ const state = {
   outputDir: "",
 };
 
+const DEFAULT_VISUAL_TEXT_TEMPLATE = "{date}\n{name}\n{birthdayDigits}";
+const DEFAULT_FISH_TEXT_TEMPLATE =
+  "{name}缘主你好，我是{masterName}道长，你的生日是{birthdayText}，很高兴在这里与你结缘相遇，接下来由我为你详细解析。";
+
 const settingFields = [
   "x",
   "y",
@@ -37,12 +41,84 @@ function value(id) {
   return $(`#${id}`).value;
 }
 
-function names() {
-  return $("#names").value
-    .replaceAll(",", "\n")
-    .split(/\r?\n/u)
-    .map((name) => name.trim())
-    .filter(Boolean);
+function todayChineseDate() {
+  const date = new Date();
+  return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}号`;
+}
+
+function looksLikeDate(text) {
+  return /(\d{4}|\d{6,8}|年|月|日|号)/u.test(String(text || ""));
+}
+
+function normalizeBirthday(valueText) {
+  const raw = String(valueText || "").trim();
+  if (!raw) return { birthdayText: "", birthdayDigits: "" };
+
+  const compact = raw.replace(/\s+/gu, "");
+  let match = /^(\d{4})(\d{2})(\d{2})$/u.exec(compact);
+  if (!match) {
+    match = /(\d{4})\D+(\d{1,2})\D+(\d{1,2})/u.exec(compact);
+  }
+
+  if (!match) {
+    const digits = compact.replace(/\D/gu, "");
+    return { birthdayText: raw, birthdayDigits: digits || raw };
+  }
+
+  const year = match[1];
+  const month = String(Number(match[2]));
+  const day = String(Number(match[3]));
+  return {
+    birthdayText: `${year}年${month}月${day}日`,
+    birthdayDigits: `${year}${match[2].padStart(2, "0")}${match[3].padStart(2, "0")}`,
+  };
+}
+
+function makeCustomer(parts, index) {
+  const name = String(parts[0] || "").trim();
+  const birthday = normalizeBirthday(parts[1] || "");
+  return {
+    id: String(index),
+    name,
+    customerName: name,
+    birthday: birthday.birthdayText,
+    birthdayText: birthday.birthdayText,
+    birthdayDigits: birthday.birthdayDigits,
+    date: String(parts[2] || "").trim() || todayChineseDate(),
+    masterName: String(parts[3] || "").trim().replace(/道长$/u, "") || "天一",
+  };
+}
+
+function customerRows() {
+  const rows = [];
+  for (const line of $("#names").value.split(/\r?\n/u)) {
+    const clean = line.trim();
+    if (!clean) continue;
+
+    const parts = clean.split(/[,\uFF0C，\t|]/u).map((part) => part.trim());
+    const filledParts = parts.filter(Boolean);
+    if (filledParts.length > 1 && !looksLikeDate(filledParts[1])) {
+      for (const name of filledParts) {
+        rows.push(makeCustomer([name], rows.length));
+      }
+    } else {
+      rows.push(makeCustomer(parts, rows.length));
+    }
+  }
+  return rows.filter((customer) => customer.name);
+}
+
+function applyTemplate(template, customer) {
+  const fields = {
+    name: customer.name,
+    customerName: customer.customerName || customer.name,
+    date: customer.date,
+    birthday: customer.birthdayText || customer.birthday,
+    birthdayText: customer.birthdayText || customer.birthday,
+    birthdayDigits: customer.birthdayDigits || customer.birthday,
+    masterName: customer.masterName,
+  };
+  return String(template || "").replace(/\{(name|customerName|date|birthday|birthdayText|birthdayDigits|masterName)\}/gu, (_match, key) => fields[key] || "");
 }
 
 function settings() {
@@ -184,11 +260,11 @@ function drawHandLine(ctx, line, fontSize, centerX, y, kind, random) {
   });
 }
 
-function createOverlay(name, current) {
+function createOverlay(customer, current) {
   const canvas = $("#textCanvas");
   const width = Math.max(8, Math.round(Number(current.width) || 360));
   const height = Math.max(8, Math.round(Number(current.height) || 96));
-  const displayText = String(current.visualTextTemplate || "{name}").replaceAll("{name}", name);
+  const displayText = applyTemplate(current.visualTextTemplate || DEFAULT_VISUAL_TEXT_TEMPLATE, customer);
   canvas.width = width;
   canvas.height = height;
   const ctx = canvas.getContext("2d");
@@ -313,20 +389,21 @@ $("#paperPreset").addEventListener("click", () => {
   $("#end").value = "99999";
   $("#fontSize").value = "16";
   $("#fontFamily").value = "hand";
-  $("#visualTextTemplate").value = "2026年5月11号\n{name}\n19970525";
+  $("#visualTextTemplate").value = DEFAULT_VISUAL_TEXT_TEMPLATE;
   $("#fontColor").value = "#23160a";
   $("#boxColor").value = "#edbd0e";
   $("#boxAlpha").value = "0";
   $("#align").value = "center";
-  setStatus("黄纸预设已套用");
+  $("#fishTextTemplate").value = DEFAULT_FISH_TEXT_TEMPLATE;
+  setStatus("黄纸和语音预设已套用");
 });
 
 $("#renderForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   const run = $(".run");
-  const list = names();
+  const list = customerRows();
   const current = settings();
-  const overlays = Object.fromEntries(list.map((name) => [name, createOverlay(name, current)]));
+  const overlays = Object.fromEntries(list.map((customer) => [customer.id, createOverlay(customer, current)]));
 
   run.disabled = true;
   setStatus("生成中");
@@ -338,7 +415,8 @@ $("#renderForm").addEventListener("submit", async (event) => {
       videoPath: state.videoPath,
       audioFiles: state.audioFiles,
       outputDir: state.outputDir,
-      names: list,
+      customers: list,
+      names: list.map((customer) => customer.name),
       settings: current,
       fish: fishSettings(),
       ai: aiSettings(),
@@ -360,7 +438,7 @@ $("#renderForm").addEventListener("submit", async (event) => {
   $("#fishApiKey").value = saved.fishApiKey || "";
   $("#fishReferenceId").value = saved.fishReferenceId || "";
   $("#fishModel").value = saved.fishModel || "s2-pro";
-  $("#fishTextTemplate").value = saved.fishTextTemplate || "{name}你吃早饭了吗？";
+  $("#fishTextTemplate").value = saved.fishTextTemplate || DEFAULT_FISH_TEXT_TEMPLATE;
   $("#fishSpeed").value = saved.fishSpeed || 1;
   $("#aliyunApiKey").value = saved.aliyunApiKey || "";
   $("#aliyunModel").value = saved.aliyunModel || "qwen-image-2.0";

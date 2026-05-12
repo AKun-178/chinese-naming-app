@@ -34,12 +34,21 @@ npm run dist
 
 - 选择模板视频。
 - 选择导出文件夹。
-- 输入名字列表。
+- 输入客户信息，一行一个：`姓名，生日，日期，道长`。
 - 设置视频画面中文字区域。
 - 设置音频短句的开始秒和结束秒。
-- 填 Fish Audio API Key、音色 `reference_id`、句子模板，例如 `{name}你吃早饭了吗？`。
+- 填 Fish Audio API Key、音色 `reference_id`。默认句子模板会把客户姓名、道长名和生日填进去。
 - 可选开启 AI 手写增强，填写阿里云百炼 API Key，用 Qwen-Image-Edit 生成更自然的黄纸手写补丁。
 - 开始批量生成。
+
+客户信息示例：
+
+```text
+王杰，1998年7月21日，2026年5月12号，天一
+李四，19970525，2026年5月12号，天一道长
+```
+
+可用模板字段：`{name}`、`{date}`、`{birthdayText}`、`{birthdayDigits}`、`{masterName}`。
 
 Fish API Key 和百炼 API Key 会保存在用户自己电脑的应用数据目录里。
 

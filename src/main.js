@@ -11,6 +11,10 @@ const ffprobeStatic = require("ffprobe-static");
 
 let mainWindow;
 
+const DEFAULT_VISUAL_TEXT_TEMPLATE = "{date}\n{name}\n{birthdayDigits}";
+const DEFAULT_FISH_TEXT_TEMPLATE =
+  "{name}缘主你好，我是{masterName}道长，你的生日是{birthdayText}，很高兴在这里与你结缘相遇，接下来由我为你详细解析。";
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1320,
@@ -75,7 +79,7 @@ async function readSettings() {
       fishApiKey: settings.fishApiKey || "",
       fishReferenceId: settings.fishReferenceId || "",
       fishModel: settings.fishModel || "s2-pro",
-      fishTextTemplate: settings.fishTextTemplate || "{name}你吃早饭了吗？",
+      fishTextTemplate: settings.fishTextTemplate || DEFAULT_FISH_TEXT_TEMPLATE,
       fishSpeed: Number(settings.fishSpeed || 1),
       aliyunApiKey: settings.aliyunApiKey || "",
       aliyunModel: settings.aliyunModel || "qwen-image-2.0",
@@ -86,7 +90,7 @@ async function readSettings() {
       fishApiKey: "",
       fishReferenceId: "",
       fishModel: "s2-pro",
-      fishTextTemplate: "{name}你吃早饭了吗？",
+      fishTextTemplate: DEFAULT_FISH_TEXT_TEMPLATE,
       fishSpeed: 1,
       aliyunApiKey: "",
       aliyunModel: "qwen-image-2.0",
@@ -111,6 +115,84 @@ function safeName(value) {
 function asNumber(value, fallback = 0) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function todayChineseDate() {
+  const date = new Date();
+  return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}号`;
+}
+
+function normalizeBirthday(valueText) {
+  const raw = String(valueText || "").trim();
+  if (!raw) return { birthdayText: "", birthdayDigits: "" };
+
+  const compact = raw.replace(/\s+/gu, "");
+  let match = /^(\d{4})(\d{2})(\d{2})$/u.exec(compact);
+  if (!match) {
+    match = /(\d{4})\D+(\d{1,2})\D+(\d{1,2})/u.exec(compact);
+  }
+
+  if (!match) {
+    const digits = compact.replace(/\D/gu, "");
+    return { birthdayText: raw, birthdayDigits: digits || raw };
+  }
+
+  const year = match[1];
+  const month = String(Number(match[2]));
+  const day = String(Number(match[3]));
+  return {
+    birthdayText: `${year}年${month}月${day}日`,
+    birthdayDigits: `${year}${match[2].padStart(2, "0")}${match[3].padStart(2, "0")}`,
+  };
+}
+
+function normalizeCustomer(input, index) {
+  if (typeof input === "string") {
+    const birthday = normalizeBirthday("");
+    return {
+      id: String(index),
+      name: input.trim(),
+      customerName: input.trim(),
+      birthday: birthday.birthdayText,
+      birthdayText: birthday.birthdayText,
+      birthdayDigits: birthday.birthdayDigits,
+      date: todayChineseDate(),
+      masterName: "天一",
+    };
+  }
+
+  const name = String(input?.name || input?.customerName || "").trim();
+  const birthday = normalizeBirthday(input?.birthdayText || input?.birthday || input?.birthdayDigits || "");
+  return {
+    id: String(input?.id ?? index),
+    name,
+    customerName: name,
+    birthday: birthday.birthdayText,
+    birthdayText: birthday.birthdayText,
+    birthdayDigits: birthday.birthdayDigits,
+    date: String(input?.date || "").trim() || todayChineseDate(),
+    masterName: String(input?.masterName || "").trim().replace(/道长$/u, "") || "天一",
+  };
+}
+
+function customersFromPayload(payload) {
+  const source = Array.isArray(payload.customers) && payload.customers.length
+    ? payload.customers
+    : payload.names || [];
+  return source.map((item, index) => normalizeCustomer(item, index)).filter((customer) => customer.name);
+}
+
+function applyTemplate(template, customer) {
+  const fields = {
+    name: customer.name,
+    customerName: customer.customerName || customer.name,
+    date: customer.date,
+    birthday: customer.birthdayText || customer.birthday,
+    birthdayText: customer.birthdayText || customer.birthday,
+    birthdayDigits: customer.birthdayDigits || customer.birthday,
+    masterName: customer.masterName,
+  };
+  return String(template || "").replace(/\{(name|customerName|date|birthday|birthdayText|birthdayDigits|masterName)\}/gu, (_match, key) => fields[key] || "");
 }
 
 function clamp(value, min, max) {
@@ -239,13 +321,14 @@ async function extractPatchReference({ videoPath, settings, jobDir, name }) {
   return { cropPath, scaleWidth, scaleHeight, width, height };
 }
 
-function visualTextForName(template, name) {
-  return String(template || "{name}").replaceAll("{name}", name);
+function visualTextForCustomer(template, customer) {
+  return applyTemplate(template || DEFAULT_VISUAL_TEXT_TEMPLATE, customer);
 }
 
-async function aliyunImageEditPatch({ videoPath, name, settings, ai, jobDir }) {
+async function aliyunImageEditPatch({ videoPath, customer, settings, ai, jobDir }) {
   if (!ai?.apiKey) throw new Error("请填写阿里云百炼 API Key。");
   const model = ai.model || "qwen-image-2.0";
+  const name = customer.name;
   const { cropPath, scaleWidth, scaleHeight, width, height } = await extractPatchReference({
     videoPath,
     settings,
@@ -253,7 +336,7 @@ async function aliyunImageEditPatch({ videoPath, name, settings, ai, jobDir }) {
     name,
   });
   const referenceImage = await encodeImageDataUrl(cropPath);
-  const visualText = visualTextForName(settings.visualTextTemplate, name);
+  const visualText = visualTextForCustomer(settings.visualTextTemplate, customer);
   const lines = visualText.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean);
   const lineText = lines.map((line, index) => `第${index + 1}行「${line}」`).join("，");
   const prompt = [
@@ -470,9 +553,9 @@ ipcMain.handle("dialog:output", async () => {
 });
 
 ipcMain.handle("render:batch", async (event, payload) => {
-  const names = (payload.names || []).map((name) => String(name).trim()).filter(Boolean);
+  const customers = customersFromPayload(payload);
   if (!payload.videoPath) throw new Error("请先选择模板视频。");
-  if (!names.length) throw new Error("请至少输入一个名字。");
+  if (!customers.length) throw new Error("请至少输入一个客户姓名。");
   if (!payload.outputDir) throw new Error("请选择导出文件夹。");
 
   const batchId = new Date().toISOString().replace(/[:.]/g, "-");
@@ -485,11 +568,12 @@ ipcMain.handle("render:batch", async (event, payload) => {
   const outputs = [];
   const warnings = [];
 
-  for (let index = 0; index < names.length; index += 1) {
-    const name = names[index];
+  for (let index = 0; index < customers.length; index += 1) {
+    const customer = customers[index];
+    const name = customer.name;
     event.sender.send("render:progress", {
       index,
-      total: names.length,
+      total: customers.length,
       name,
       message: `正在处理 ${name}`,
     });
@@ -499,7 +583,7 @@ ipcMain.handle("render:batch", async (event, payload) => {
     const audioMatched = Boolean(audioClip);
 
     if (!audioClip && payload.fish?.enabled) {
-      const text = String(payload.fish.textTemplate || "{name}你吃早饭了吗？").replaceAll("{name}", name);
+      const text = applyTemplate(payload.fish.textTemplate || DEFAULT_FISH_TEXT_TEMPLATE, customer);
       audioClip = path.join(jobDir, `${safeName(name)}_fish.mp3`);
       await fishAudioTts({
         text,
@@ -519,13 +603,13 @@ ipcMain.handle("render:batch", async (event, payload) => {
     if (payload.ai?.enabled) {
       event.sender.send("render:progress", {
         index,
-        total: names.length,
+        total: customers.length,
         name,
         message: `AI 正在生成 ${name} 的手写补丁`,
       });
       overlayFilePath = await aliyunImageEditPatch({
         videoPath: payload.videoPath,
-        name,
+        customer,
         settings: payload.settings,
         ai: payload.ai,
         jobDir,
@@ -536,7 +620,7 @@ ipcMain.handle("render:batch", async (event, payload) => {
     const outputPath = await renderOne({
       videoPath: payload.videoPath,
       name,
-      overlayDataUrl: payload.overlays[name],
+      overlayDataUrl: payload.overlays?.[customer.id] || payload.overlays?.[name],
       overlayFilePath,
       audioClip,
       settings: payload.settings,
@@ -548,8 +632,8 @@ ipcMain.handle("render:batch", async (event, payload) => {
   }
 
   event.sender.send("render:progress", {
-    index: names.length,
-    total: names.length,
+    index: customers.length,
+    total: customers.length,
     message: "已完成",
   });
 

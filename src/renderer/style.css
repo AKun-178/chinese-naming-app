@@ -164,7 +164,8 @@ textarea {
   resize: vertical;
 }
 
-#visualTextTemplate {
+#visualTextTemplate,
+#fishTextTemplate {
   min-height: 82px;
 }
 

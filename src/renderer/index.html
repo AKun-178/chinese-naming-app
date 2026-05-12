@@ -33,10 +33,10 @@
 
           <section class="panel">
             <div class="panel-title">
-              <h2>名字列表</h2>
-              <span>一行一个，也可以用逗号隔开</span>
+              <h2>客户信息</h2>
+              <span>一行一个：姓名，生日，日期，道长</span>
             </div>
-            <textarea id="names" rows="12" placeholder="张三&#10;李四&#10;王五" required></textarea>
+            <textarea id="names" rows="12" placeholder="王杰，1998年7月21日，2026年5月12号，天一&#10;李四，19970525，2026年5月12号，天一道长" required></textarea>
           </section>
 
           <section class="panel">
@@ -80,6 +80,7 @@
                 <option value="white">白色</option>
                 <option value="#1b1b1b">深灰</option>
                 <option value="#f4f1ea">浅米</option>
+                <option value="#edbd0e">黄纸</option>
                 <option value="#1f6f8b">蓝绿</option>
               </select>
             </label>
@@ -90,7 +91,7 @@
                 <option value="right">靠右</option>
               </select>
             </label>
-            <button type="button" class="save" id="paperPreset">套用这条视频的黄纸预设</button>
+            <button type="button" class="save" id="paperPreset">套用黄纸和语音预设</button>
           </section>
 
           <section class="panel span-2">
@@ -129,7 +130,7 @@
               <label>语速<input id="fishSpeed" type="number" value="1" min="0.5" max="2" step="0.05" /></label>
             </div>
             <label>生成句子模板
-              <input id="fishTextTemplate" type="text" value="{name}你吃早饭了吗？" />
+              <textarea id="fishTextTemplate" rows="3">{name}缘主你好，我是{masterName}道长，你的生日是{birthdayText}，很高兴在这里与你结缘相遇，接下来由我为你详细解析。</textarea>
             </label>
             <button type="button" class="save" id="saveSettings">保存 Fish 设置到本机</button>
           </section>
