@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, net } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const fsp = require("fs/promises");
@@ -279,8 +279,43 @@ async function encodeImageDataUrl(filePath) {
   return `data:${mime};base64,${data.toString("base64")}`;
 }
 
+function apiHost(url) {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return url;
+  }
+}
+
+function networkHint(provider) {
+  if (provider === "Fish Audio") {
+    return "请确认这台 Windows 电脑能访问 Fish Audio；如果浏览器靠代理才能访问，请先开启系统代理后再试。";
+  }
+  if (provider === "阿里云百炼") {
+    return "请确认百炼 API Key、地域选择和当前网络可用。";
+  }
+  return "请确认当前网络可用后再试。";
+}
+
+async function requestApi(url, options = {}, provider = "API", timeoutMs = 120000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const request = typeof net?.fetch === "function" ? net.fetch.bind(net) : fetch;
+
+  try {
+    return await request(url, { ...options, signal: controller.signal });
+  } catch (error) {
+    const detail = error?.name === "AbortError"
+      ? "请求超时"
+      : error?.cause?.message || error?.message || String(error);
+    throw new Error(`${provider} 请求失败：无法连接 ${apiHost(url)}。${networkHint(provider)} 原始错误：${detail}`);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function downloadFile(url, filePath) {
-  const response = await fetch(url);
+  const response = await requestApi(url, {}, "图片下载", 120000);
   if (!response.ok) {
     const detail = await response.text();
     throw new Error(`下载生成图片失败：HTTP ${response.status} ${detail}`);
@@ -346,7 +381,7 @@ async function aliyunImageEditPatch({ videoPath, customer, settings, ai, jobDir 
     "不要改变红色印章、符号、边缘和背景。",
   ].join("");
 
-  const response = await fetch(dashscopeEndpoint(ai.region), {
+  const response = await requestApi(dashscopeEndpoint(ai.region), {
     method: "POST",
     headers: {
       Authorization: `Bearer ${ai.apiKey}`,
@@ -370,7 +405,7 @@ async function aliyunImageEditPatch({ videoPath, customer, settings, ai, jobDir 
         size: `${scaleWidth}*${scaleHeight}`,
       },
     }),
-  });
+  }, "阿里云百炼", 180000);
 
   const payload = await response.json().catch(() => null);
   if (!response.ok || payload?.code) {
@@ -397,7 +432,7 @@ async function fishAudioTts({ text, apiKey, referenceId, model, speed, outputPat
   if (!apiKey) throw new Error("请填写 Fish Audio API Key。");
   if (!referenceId) throw new Error("请填写 Fish Audio 音色 reference_id。");
 
-  const response = await fetch("https://api.fish.audio/v1/tts", {
+  const response = await requestApi("https://api.fish.audio/v1/tts", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -425,7 +460,7 @@ async function fishAudioTts({ text, apiKey, referenceId, model, speed, outputPat
       min_chunk_length: 50,
       condition_on_previous_chunks: true,
     }),
-  });
+  }, "Fish Audio", 180000);
 
   if (!response.ok) {
     const detail = await response.text();
