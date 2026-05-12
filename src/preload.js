@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld("desktopApi", {
   writeSettings: (settings) => ipcRenderer.invoke("settings:write", settings),
   selectVideo: () => ipcRenderer.invoke("dialog:video"),
   selectAudio: () => ipcRenderer.invoke("dialog:audio"),
+  selectBackgroundAudio: () => ipcRenderer.invoke("dialog:backgroundAudio"),
   selectOutput: () => ipcRenderer.invoke("dialog:output"),
   openExternal: (target) => ipcRenderer.invoke("open:external", target),
   renderBatch: (payload) => ipcRenderer.invoke("render:batch", payload),

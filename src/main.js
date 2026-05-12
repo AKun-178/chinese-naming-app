@@ -583,7 +583,7 @@ function audioClipMap(files) {
   return map;
 }
 
-async function renderOne({ videoPath, name, overlayDataUrl, overlayFilePath, audioClip, settings, outputDir, jobDir, job }) {
+async function renderOne({ videoPath, name, overlayDataUrl, overlayFilePath, audioClip, backgroundAudioPath, settings, outputDir, jobDir, job }) {
   assertNotCancelled(job);
   const id = crypto.randomUUID();
   const clean = safeName(name);
@@ -634,23 +634,40 @@ async function renderOne({ videoPath, name, overlayDataUrl, overlayFilePath, aud
     `[0:v]drawbox=x=${x}:y=${y}:w=${width}:h=${height}:color=${boxColor}@${boxAlpha}:t=fill:enable='${enable}'[boxed];` +
     `[1:v]format=rgba[text];[boxed][text]overlay=x=${x}:y=${y}:enable='${enable}':shortest=1[v]`;
   let audioArgs = ["-map", "0:a?", "-c:a", "copy"];
+  let backgroundIndex = null;
+  let voiceIndex = null;
+
+  if (backgroundAudioPath) {
+    args.push("-stream_loop", "-1", "-i", backgroundAudioPath);
+    backgroundIndex = 2;
+  }
 
   if (audioClip && audioEnd > audioStart) {
     const segment = audioEnd - audioStart;
     const delayMs = Math.round(audioStart * 1000);
-    const sourceHasAudio = await hasAudio(videoPath, job);
     args.push("-i", audioClip);
+    voiceIndex = backgroundIndex ? 3 : 2;
 
-    if (sourceHasAudio) {
+    if (backgroundIndex) {
+      const backgroundDuration = Math.max(duration || segment, audioEnd);
+      filterComplex +=
+        `;[${backgroundIndex}:a]aresample=48000,volume=0.72,atrim=0:${backgroundDuration},asetpts=PTS-STARTPTS[bgm];` +
+        `[${voiceIndex}:a]aresample=48000,volume=1.35,atrim=0:${segment},asetpts=PTS-STARTPTS,apad,atrim=0:${segment},adelay=${delayMs}:all=1[rep];` +
+        `[bgm][rep]amix=inputs=2:duration=first:dropout_transition=0[a]`;
+    } else if (await hasAudio(videoPath, job)) {
       filterComplex +=
         `;[0:a]volume=enable='between(t\\,${audioStart}\\,${audioEnd})':volume=0.22[ducked];` +
-        `[2:a]aresample=48000,volume=1.35,atrim=0:${segment},asetpts=PTS-STARTPTS,apad,atrim=0:${segment},adelay=${delayMs}:all=1[rep];` +
+        `[${voiceIndex}:a]aresample=48000,volume=1.35,atrim=0:${segment},asetpts=PTS-STARTPTS,apad,atrim=0:${segment},adelay=${delayMs}:all=1[rep];` +
         `[ducked][rep]amix=inputs=2:duration=first:dropout_transition=0[a]`;
     } else {
       const audioPadDuration = Math.max(duration || segment, audioStart + segment);
       filterComplex +=
-        `;[2:a]aresample=48000,volume=1.35,atrim=0:${segment},asetpts=PTS-STARTPTS,adelay=${delayMs}:all=1,apad,atrim=0:${audioPadDuration}[a]`;
+        `;[${voiceIndex}:a]aresample=48000,volume=1.35,atrim=0:${segment},asetpts=PTS-STARTPTS,adelay=${delayMs}:all=1,apad,atrim=0:${audioPadDuration}[a]`;
     }
+    audioArgs = ["-map", "[a]", "-c:a", "aac", "-b:a", "192k"];
+  } else if (backgroundIndex) {
+    const backgroundDuration = Math.max(duration || 0.05, 0.05);
+    filterComplex += `;[${backgroundIndex}:a]aresample=48000,volume=0.72,atrim=0:${backgroundDuration},asetpts=PTS-STARTPTS[a]`;
     audioArgs = ["-map", "[a]", "-c:a", "aac", "-b:a", "192k"];
   }
 
@@ -714,6 +731,15 @@ ipcMain.handle("dialog:audio", async () => {
     filters: [{ name: "音频", extensions: ["wav", "mp3", "m4a", "aac", "flac", "ogg"] }],
   });
   return result.canceled ? [] : result.filePaths;
+});
+
+ipcMain.handle("dialog:backgroundAudio", async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: "选择背景音乐",
+    properties: ["openFile"],
+    filters: [{ name: "音频", extensions: ["wav", "mp3", "m4a", "aac", "flac", "ogg"] }],
+  });
+  return result.canceled ? null : result.filePaths[0];
 });
 
 ipcMain.handle("dialog:output", async () => {
@@ -808,6 +834,7 @@ ipcMain.handle("render:batch", async (event, payload) => {
         overlayDataUrl: payload.overlays?.[customer.id] || payload.overlays?.[name],
         overlayFilePath,
         audioClip,
+        backgroundAudioPath: payload.backgroundAudioPath,
         settings: payload.settings,
         outputDir,
         jobDir,

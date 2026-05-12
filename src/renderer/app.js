@@ -3,6 +3,7 @@ const $ = (selector) => document.querySelector(selector);
 const state = {
   videoPath: "",
   audioFiles: [],
+  backgroundAudioPath: "",
   outputDir: "",
   toastTimer: null,
 };
@@ -378,6 +379,14 @@ $("#pickAudio").addEventListener("click", async () => {
   $("#audioName").textContent = state.audioFiles.length ? `已选择 ${state.audioFiles.length} 个音频文件` : "不选则使用 Fish Audio 或只替换画面";
 });
 
+$("#pickBackgroundAudio").addEventListener("click", async () => {
+  const file = await window.desktopApi.selectBackgroundAudio();
+  if (file) {
+    state.backgroundAudioPath = file;
+    $("#backgroundAudioName").textContent = basename(file);
+  }
+});
+
 $("#pickOutput").addEventListener("click", async () => {
   const folder = await window.desktopApi.selectOutput();
   if (folder) {
@@ -449,6 +458,7 @@ $("#renderForm").addEventListener("submit", async (event) => {
     const result = await window.desktopApi.renderBatch({
       videoPath: state.videoPath,
       audioFiles: state.audioFiles,
+      backgroundAudioPath: state.backgroundAudioPath,
       outputDir: state.outputDir,
       customers: list,
       names: list.map((customer) => customer.name),

@@ -4,5 +4,7 @@ dist/
 .electron-cache/
 .electron-builder-cache/
 .cache/
+demo-output/
+real-api-output/
 *.log
 .DS_Store
