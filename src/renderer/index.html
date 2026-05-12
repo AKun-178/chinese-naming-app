@@ -41,63 +41,34 @@
 
           <section class="panel">
             <div class="panel-title">
-              <h2>画面文字区域</h2>
-              <span>原字所在的位置</span>
+              <h2>黄纸区域</h2>
+              <span>日期、姓名、生日所在的位置</span>
             </div>
             <div class="fields four">
-              <label>X<input id="x" type="number" value="80" min="0" /></label>
-              <label>Y<input id="y" type="number" value="80" min="0" /></label>
-              <label>宽<input id="width" type="number" value="360" min="8" /></label>
-              <label>高<input id="height" type="number" value="96" min="8" /></label>
+              <label>X<input id="x" type="number" value="184" min="0" /></label>
+              <label>Y<input id="y" type="number" value="490" min="0" /></label>
+              <label>宽<input id="width" type="number" value="135" min="8" /></label>
+              <label>高<input id="height" type="number" value="130" min="8" /></label>
             </div>
             <div class="fields two">
               <label>出现秒<input id="start" type="number" value="0" min="0" step="0.01" /></label>
               <label>结束秒<input id="end" type="number" value="99999" min="0" step="0.01" /></label>
             </div>
-            <div class="fields two">
-              <label>字号<input id="fontSize" type="number" value="48" min="8" /></label>
-              <label>压缩质量<input id="crf" type="number" value="18" min="10" max="35" /></label>
-            </div>
-            <div class="fields two">
-              <label>字体风格
-                <select id="fontFamily">
-                  <option value="hand">手写感</option>
-                  <option value="kai">楷体</option>
-                  <option value="hei">黑体</option>
-                </select>
-              </label>
-              <label>文字模板
-                <textarea id="visualTextTemplate" rows="3">{name}</textarea>
-              </label>
-            </div>
-            <div class="fields two">
-              <label>文字颜色<input id="fontColor" type="color" value="#ffffff" /></label>
-              <label>遮盖透明度<input id="boxAlpha" type="range" value="0.86" min="0" max="1" step="0.01" /></label>
-            </div>
-            <label>遮盖颜色
-              <select id="boxColor">
-                <option value="black">黑色</option>
-                <option value="white">白色</option>
-                <option value="#1b1b1b">深灰</option>
-                <option value="#f4f1ea">浅米</option>
-                <option value="#edbd0e">黄纸</option>
-                <option value="#1f6f8b">蓝绿</option>
-              </select>
-            </label>
-            <label>对齐
-              <select id="align">
-                <option value="center">居中</option>
-                <option value="left">靠左</option>
-                <option value="right">靠右</option>
-              </select>
-            </label>
-            <button type="button" class="save" id="paperPreset">套用黄纸和语音预设</button>
+            <label>视频质量<input id="crf" type="number" value="18" min="10" max="35" /></label>
+            <input id="fontSize" type="hidden" value="16" />
+            <input id="fontFamily" type="hidden" value="hand" />
+            <textarea id="visualTextTemplate" hidden>{date}&#10;{name}&#10;{birthdayDigits}</textarea>
+            <input id="fontColor" type="hidden" value="#23160a" />
+            <input id="boxAlpha" type="hidden" value="0" />
+            <input id="boxColor" type="hidden" value="#edbd0e" />
+            <input id="align" type="hidden" value="center" />
+            <button type="button" class="save" id="paperPreset">恢复黄纸位置预设</button>
           </section>
 
           <section class="panel span-2">
             <div class="panel-title">
               <h2>音频替换</h2>
-              <span>替换短句所在的时间段</span>
+              <span>结束秒填 0 时按生成语音长度替换</span>
             </div>
             <div class="fields two">
               <label>替换开始秒<input id="audioStart" type="number" value="0" min="0" step="0.01" /></label>
@@ -140,13 +111,10 @@
 
           <section class="panel span-2">
             <div class="panel-title">
-              <h2>AI 手写增强</h2>
-              <span>用阿里云百炼生成更像手写的黄纸补丁</span>
+              <h2>图片 API</h2>
+              <span>自动模仿原图手写并替换三行字</span>
             </div>
-            <label class="toggle">
-              <input id="aliyunEnabled" type="checkbox" />
-              <span>开启后直接调用图像编辑模型，不单独预览</span>
-            </label>
+            <input id="aliyunEnabled" type="checkbox" checked hidden />
             <div class="fields two">
               <label>百炼 API Key<input id="aliyunApiKey" type="password" autocomplete="off" /></label>
               <label>地域

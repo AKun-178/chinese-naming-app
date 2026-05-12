@@ -470,9 +470,10 @@ async function aliyunImageEditPatch({ videoPath, customer, settings, ai, jobDir,
   const lines = visualText.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean);
   const lineText = lines.map((line, index) => `第${index + 1}行「${line}」`).join("，");
   const prompt = [
-    "只编辑图中的黄纸手写文字区域，保持黄纸颜色、纸张纹理、光照、透视、阴影和周围内容不变。",
-    `把原有手写内容替换为${lineText}。`,
-    "新文字必须是深色签字笔手写风格，像真实手写在黄纸上，不要像印刷字体，不要生成额外文字。",
+    "只编辑图中黄纸上的原有三行手写文字，保持黄纸颜色、纸张纹理、光照、透视、阴影和周围内容不变。",
+    `把三行原字按原来的位置、行距和大小分别替换为${lineText}。`,
+    "新文字必须模仿参考图里的真实手写笔迹、笔画粗细、倾斜角度和墨色，不要像印刷字体或电脑字体。",
+    "三行文字要落在原来日期、姓名、生日的位置，不要挤到顶部，不要改变布局。",
     "不要改变红色印章、符号、边缘和背景。",
   ].join("");
 
@@ -596,8 +597,21 @@ async function renderOne({ videoPath, name, overlayDataUrl, overlayFilePath, aud
   const height = Math.max(8, Math.round(asNumber(settings.height, 96)));
   const start = Math.max(0, asNumber(settings.start, 0));
   const end = Math.max(start + 0.05, asNumber(settings.end, duration || 99999));
-  const audioStart = Math.max(0, asNumber(settings.audioStart, 0));
-  const audioEnd = Math.max(audioStart + 0.05, asNumber(settings.audioEnd, 0));
+  const audioStart = duration > 0
+    ? Math.min(duration, Math.max(0, asNumber(settings.audioStart, 0)))
+    : Math.max(0, asNumber(settings.audioStart, 0));
+  const requestedAudioEnd = asNumber(settings.audioEnd, 0);
+  let audioEnd = requestedAudioEnd > audioStart ? requestedAudioEnd : audioStart;
+  let audioClipDuration = 0;
+  if (audioClip) {
+    audioClipDuration = await mediaDuration(audioClip, job);
+    if (audioEnd <= audioStart) {
+      audioEnd = audioStart + Math.max(0.05, audioClipDuration || 0);
+    }
+  }
+  if (duration > 0) {
+    audioEnd = Math.min(duration, audioEnd);
+  }
   const boxColor = colorToFfmpeg(settings.boxColor || "black");
   const boxAlpha = clamp(asNumber(settings.boxAlpha, 0.86), 0, 1);
   const crf = Math.round(clamp(asNumber(settings.crf, 18), 10, 35));
@@ -621,14 +635,22 @@ async function renderOne({ videoPath, name, overlayDataUrl, overlayFilePath, aud
     `[1:v]format=rgba[text];[boxed][text]overlay=x=${x}:y=${y}:enable='${enable}':shortest=1[v]`;
   let audioArgs = ["-map", "0:a?", "-c:a", "copy"];
 
-  if (audioClip && audioEnd > audioStart && (await hasAudio(videoPath, job))) {
+  if (audioClip && audioEnd > audioStart) {
     const segment = audioEnd - audioStart;
     const delayMs = Math.round(audioStart * 1000);
+    const sourceHasAudio = await hasAudio(videoPath, job);
     args.push("-i", audioClip);
-    filterComplex +=
-      `;[0:a]volume=enable='between(t\\,${audioStart}\\,${audioEnd})':volume=0[ducked];` +
-      `[2:a]aresample=48000,atrim=0:${segment},asetpts=PTS-STARTPTS,apad,atrim=0:${segment},adelay=${delayMs}:all=1[rep];` +
-      `[ducked][rep]amix=inputs=2:duration=first:dropout_transition=0[a]`;
+
+    if (sourceHasAudio) {
+      filterComplex +=
+        `;[0:a]volume=enable='between(t\\,${audioStart}\\,${audioEnd})':volume=0[ducked];` +
+        `[2:a]aresample=48000,atrim=0:${segment},asetpts=PTS-STARTPTS,apad,atrim=0:${segment},adelay=${delayMs}:all=1[rep];` +
+        `[ducked][rep]amix=inputs=2:duration=first:dropout_transition=0[a]`;
+    } else {
+      const audioPadDuration = Math.max(duration || segment, audioStart + segment);
+      filterComplex +=
+        `;[2:a]aresample=48000,atrim=0:${segment},asetpts=PTS-STARTPTS,adelay=${delayMs}:all=1,apad,atrim=0:${audioPadDuration}[a]`;
+    }
     audioArgs = ["-map", "[a]", "-c:a", "aac", "-b:a", "192k"];
   }
 
@@ -709,6 +731,9 @@ ipcMain.handle("render:batch", async (event, payload) => {
   if (!payload.videoPath) throw new Error("请先选择模板视频。");
   if (!customers.length) throw new Error("请至少输入一个客户姓名。");
   if (!payload.outputDir) throw new Error("请选择导出文件夹。");
+  if (payload.ai?.enabled && !payload.ai.apiKey) throw new Error("请先填写百炼 API Key，画面手写替换需要调用图片 API。");
+  if (payload.fish?.enabled && !payload.fish.apiKey) throw new Error("请先填写 Fish Audio API Key。");
+  if (payload.fish?.enabled && !payload.fish.referenceId) throw new Error("请先填写 Fish Audio 音色 reference_id。");
 
   const renderJob = createRenderJob(event.sender);
   activeRenderJob = renderJob;

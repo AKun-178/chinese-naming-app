@@ -419,8 +419,8 @@ $("#cancelRender").addEventListener("click", async () => {
 $("#paperPreset").addEventListener("click", () => {
   $("#x").value = "184";
   $("#y").value = "490";
-  $("#width").value = "116";
-  $("#height").value = "123";
+  $("#width").value = "135";
+  $("#height").value = "130";
   $("#start").value = "0";
   $("#end").value = "99999";
   $("#fontSize").value = "16";
@@ -431,7 +431,7 @@ $("#paperPreset").addEventListener("click", () => {
   $("#boxAlpha").value = "0";
   $("#align").value = "center";
   $("#fishTextTemplate").value = DEFAULT_FISH_TEXT_TEMPLATE;
-  setStatus("黄纸和语音预设已套用");
+  setStatus("黄纸位置预设已恢复");
 });
 
 $("#renderForm").addEventListener("submit", async (event) => {
