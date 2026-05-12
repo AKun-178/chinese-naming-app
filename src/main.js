@@ -643,7 +643,7 @@ async function renderOne({ videoPath, name, overlayDataUrl, overlayFilePath, aud
 
     if (sourceHasAudio) {
       filterComplex +=
-        `;[0:a]volume=enable='between(t\\,${audioStart}\\,${audioEnd})':volume=0[ducked];` +
+        `;[0:a]volume=enable='between(t\\,${audioStart}\\,${audioEnd})':volume=0.22[ducked];` +
         `[2:a]aresample=48000,volume=1.35,atrim=0:${segment},asetpts=PTS-STARTPTS,apad,atrim=0:${segment},adelay=${delayMs}:all=1[rep];` +
         `[ducked][rep]amix=inputs=2:duration=first:dropout_transition=0[a]`;
     } else {
