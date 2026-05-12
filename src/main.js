@@ -473,7 +473,7 @@ async function aliyunImageEditPatch({ videoPath, customer, settings, ai, jobDir,
     "只编辑图中黄纸上的原有三行手写文字，保持黄纸颜色、纸张纹理、光照、透视、阴影和周围内容不变。",
     `把三行原字按原来的位置、行距和大小分别替换为${lineText}。`,
     "新文字必须模仿参考图里的真实手写笔迹、笔画粗细、倾斜角度和墨色，不要像印刷字体或电脑字体。",
-    "三行文字要落在原来日期、姓名、生日的位置，不要挤到顶部，不要改变布局。",
+    "三行文字必须控制在原字大小附近，落在原来日期、姓名、生日的位置，不要变大，不要超出黄纸，不要挤到顶部，不要重新居中排版。",
     "不要改变红色印章、符号、边缘和背景。",
   ].join("");
 
@@ -495,7 +495,7 @@ async function aliyunImageEditPatch({ videoPath, customer, settings, ai, jobDir,
       },
       parameters: {
         n: 1,
-        negative_prompt: "印刷体，电脑字体，错别字，多余文字，水印，改变印章，改变背景，低清晰度",
+        negative_prompt: "印刷体，电脑字体，打字效果，居中排版，文字过大，文字超出黄纸，文字挤到顶部，错别字，多余文字，水印，改变印章，改变背景，低清晰度",
         prompt_extend: false,
         watermark: false,
         size: `${scaleWidth}*${scaleHeight}`,
@@ -644,12 +644,12 @@ async function renderOne({ videoPath, name, overlayDataUrl, overlayFilePath, aud
     if (sourceHasAudio) {
       filterComplex +=
         `;[0:a]volume=enable='between(t\\,${audioStart}\\,${audioEnd})':volume=0[ducked];` +
-        `[2:a]aresample=48000,atrim=0:${segment},asetpts=PTS-STARTPTS,apad,atrim=0:${segment},adelay=${delayMs}:all=1[rep];` +
+        `[2:a]aresample=48000,volume=1.35,atrim=0:${segment},asetpts=PTS-STARTPTS,apad,atrim=0:${segment},adelay=${delayMs}:all=1[rep];` +
         `[ducked][rep]amix=inputs=2:duration=first:dropout_transition=0[a]`;
     } else {
       const audioPadDuration = Math.max(duration || segment, audioStart + segment);
       filterComplex +=
-        `;[2:a]aresample=48000,atrim=0:${segment},asetpts=PTS-STARTPTS,adelay=${delayMs}:all=1,apad,atrim=0:${audioPadDuration}[a]`;
+        `;[2:a]aresample=48000,volume=1.35,atrim=0:${segment},asetpts=PTS-STARTPTS,adelay=${delayMs}:all=1,apad,atrim=0:${audioPadDuration}[a]`;
     }
     audioArgs = ["-map", "[a]", "-c:a", "aac", "-b:a", "192k"];
   }
