@@ -47,6 +47,22 @@ function value(id) {
   return $(`#${id}`).value;
 }
 
+function desktopMethod(name, fallbackName = "") {
+  const api = window.desktopApi;
+  const method = api?.[name] || (fallbackName ? api?.[fallbackName] : null);
+  if (typeof method !== "function") {
+    throw new Error("当前窗口没有加载桌面版能力。请关闭这个窗口，在终端运行 npm start 打开软件。");
+  }
+  return method.bind(api);
+}
+
+function reportActionError(error) {
+  const message = error.message || String(error);
+  setStatus("操作失败");
+  showToast(message);
+  return message;
+}
+
 function todayChineseDate() {
   const date = new Date();
   return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}号`;
@@ -399,73 +415,127 @@ function renderOutputs(result) {
   }
 }
 
-window.desktopApi.onProgress((data) => {
-  $("#progressText").textContent = data.message || "";
-  $("#progress").max = data.total || 1;
-  $("#progress").value = data.index || 0;
-});
+if (window.desktopApi?.onProgress) {
+  window.desktopApi.onProgress((data) => {
+    $("#progressText").textContent = data.message || "";
+    $("#progress").max = data.total || 1;
+    $("#progress").value = data.index || 0;
+  });
+} else {
+  $("#progressText").textContent = "请用 npm start 打开桌面版";
+}
 
 $("#pickVideo").addEventListener("click", async () => {
-  const file = await window.desktopApi.selectVideo();
-  if (file) {
-    state.videoPath = file;
-    $("#videoName").textContent = basename(file);
+  try {
+    setStatus("正在打开文件选择窗口");
+    const file = await desktopMethod("selectVideo")();
+    if (file) {
+      state.videoPath = file;
+      $("#videoName").textContent = basename(file);
+      setStatus("模板视频已选择");
+    }
+  } catch (error) {
+    reportActionError(error);
   }
 });
 
 $("#pickAudio").addEventListener("click", async () => {
-  state.audioFiles = await window.desktopApi.selectAudio();
-  $("#audioName").textContent = state.audioFiles.length ? `已选择 ${state.audioFiles.length} 个音频文件` : "不选则使用 Fish Audio 或只替换画面";
+  try {
+    setStatus("正在打开文件选择窗口");
+    state.audioFiles = await desktopMethod("selectAudio")();
+    $("#audioName").textContent = state.audioFiles.length ? `已选择 ${state.audioFiles.length} 个音频文件` : "不选则使用 Fish Audio 或只替换画面";
+    setStatus("音频已选择");
+  } catch (error) {
+    reportActionError(error);
+  }
 });
 
 $("#pickBackgroundAudio").addEventListener("click", async () => {
-  const file = await window.desktopApi.selectBackgroundAudio();
-  if (file) {
-    state.backgroundAudioPath = file;
-    $("#backgroundAudioName").textContent = basename(file);
+  try {
+    setStatus("正在打开文件选择窗口");
+    const file = await desktopMethod("selectBackgroundAudio")();
+    if (file) {
+      state.backgroundAudioPath = file;
+      $("#backgroundAudioName").textContent = basename(file);
+      setStatus("背景音乐已选择");
+    }
+  } catch (error) {
+    reportActionError(error);
   }
 });
 
 $("#pickTailVideo").addEventListener("click", async () => {
-  const file = await window.desktopApi.selectTailVideo();
-  if (file) {
-    state.tailVideoPath = file;
-    $("#tailVideoName").textContent = basename(file);
-    markTailNeedsBuild();
+  try {
+    setStatus("正在打开后段视频选择窗口");
+    $("#tailBuildStatus").textContent = "正在打开后段视频选择窗口";
+    const file = await desktopMethod("selectTailVideo", "selectVideo")();
+    if (file) {
+      state.tailVideoPath = file;
+      $("#tailVideoName").textContent = basename(file);
+      markTailNeedsBuild();
+      setStatus("后段画面视频已选择");
+    }
+  } catch (error) {
+    $("#tailBuildStatus").textContent = reportActionError(error);
   }
 });
 
 $("#pickTailBackground").addEventListener("click", async () => {
-  const file = await window.desktopApi.selectTailBackground();
-  if (file) {
-    state.tailBackgroundPath = file;
-    $("#tailBackgroundName").textContent = basename(file);
-    markTailNeedsBuild();
+  try {
+    setStatus("正在打开后段背景选择窗口");
+    $("#tailBuildStatus").textContent = "正在打开后段背景选择窗口";
+    const file = await desktopMethod("selectTailBackground", "selectBackgroundAudio")();
+    if (file) {
+      state.tailBackgroundPath = file;
+      $("#tailBackgroundName").textContent = basename(file);
+      markTailNeedsBuild();
+      setStatus("后段纯背景已选择");
+    }
+  } catch (error) {
+    $("#tailBuildStatus").textContent = reportActionError(error);
   }
 });
 
 $("#pickOutput").addEventListener("click", async () => {
-  const folder = await window.desktopApi.selectOutput();
-  if (folder) {
-    state.outputDir = folder;
-    $("#outputName").textContent = folder;
+  try {
+    setStatus("正在打开文件夹选择窗口");
+    const folder = await desktopMethod("selectOutput")();
+    if (folder) {
+      state.outputDir = folder;
+      $("#outputName").textContent = folder;
+      setStatus("导出文件夹已选择");
+    }
+  } catch (error) {
+    reportActionError(error);
   }
 });
 
 $("#saveSettings").addEventListener("click", async () => {
-  await window.desktopApi.writeSettings(savedSettings());
-  setStatus("Fish 设置已保存");
-  showToast("Fish 设置保存成功");
+  try {
+    await desktopMethod("writeSettings")(savedSettings());
+    setStatus("Fish 设置已保存");
+    showToast("Fish 设置保存成功");
+  } catch (error) {
+    reportActionError(error);
+  }
 });
 
 $("#saveAiSettings").addEventListener("click", async () => {
-  await window.desktopApi.writeSettings(savedSettings());
-  setStatus("AI 设置已保存");
-  showToast("AI 设置保存成功");
+  try {
+    await desktopMethod("writeSettings")(savedSettings());
+    setStatus("AI 设置已保存");
+    showToast("AI 设置保存成功");
+  } catch (error) {
+    reportActionError(error);
+  }
 });
 
 $("#openFishApi").addEventListener("click", async () => {
-  await window.desktopApi.openExternal("fishApi");
+  try {
+    await desktopMethod("openExternal")("fishApi");
+  } catch (error) {
+    reportActionError(error);
+  }
 });
 
 $("#buildTailVideo").addEventListener("click", async () => {
@@ -493,7 +563,7 @@ $("#buildTailVideo").addEventListener("click", async () => {
     setRendering(true);
     $("#tailBuildStatus").textContent = "正在生成固定后段";
     setStatus("正在生成固定后段");
-    const result = await window.desktopApi.buildTailVideo({
+    const result = await desktopMethod("buildTailVideo")({
       tail,
       fish,
       crf: value("crf"),
@@ -502,7 +572,7 @@ $("#buildTailVideo").addEventListener("click", async () => {
     state.tailSignature = result.signature || "";
     $("#tailEnabled").checked = true;
     $("#tailBuildStatus").textContent = result.warning || "固定后段已生成，可复用";
-    await window.desktopApi.writeSettings(savedSettings());
+    await desktopMethod("writeSettings")(savedSettings());
     setStatus("固定后段已保存");
     showToast("固定后段生成成功");
   } catch (error) {
@@ -529,7 +599,7 @@ $("#cloneFishVoice").addEventListener("click", async () => {
   try {
     button.disabled = true;
     status.textContent = "请选择一段清晰人声音频";
-    const audioPath = await window.desktopApi.selectVoiceSample();
+    const audioPath = await desktopMethod("selectVoiceSample")();
     if (!audioPath) {
       status.textContent = "已取消选择";
       return;
@@ -538,11 +608,11 @@ $("#cloneFishVoice").addEventListener("click", async () => {
     const title = value("fishVoiceTitle").trim() || filenameStem(audioPath) || "自定义音色";
     status.textContent = "正在克隆音色，可能需要几十秒";
     setStatus("正在克隆音色");
-    const result = await window.desktopApi.cloneFishVoice({ apiKey, audioPath, title });
+    const result = await desktopMethod("cloneFishVoice")({ apiKey, audioPath, title });
     $("#fishReferenceId").value = result.referenceId || "";
     $("#fishEnabled").checked = true;
     markTailNeedsBuild("音色已变化，固定后段需要重新生成");
-    await window.desktopApi.writeSettings(savedSettings());
+    await desktopMethod("writeSettings")(savedSettings());
     status.textContent = `音色已创建并保存：${result.referenceId}`;
     setStatus("音色已保存");
     showToast("音色克隆成功，ID 已自动填入");
@@ -557,16 +627,24 @@ $("#cloneFishVoice").addEventListener("click", async () => {
 });
 
 $("#openAliyunApi").addEventListener("click", async () => {
-  await window.desktopApi.openExternal("aliyunApi");
+  try {
+    await desktopMethod("openExternal")("aliyunApi");
+  } catch (error) {
+    reportActionError(error);
+  }
 });
 
 $("#cancelRender").addEventListener("click", async () => {
   $("#cancelRender").disabled = true;
   setStatus("正在中断");
   $("#progressText").textContent = "正在中断当前任务";
-  const cancelled = await window.desktopApi.cancelRender();
-  if (!cancelled) {
-    setStatus("没有运行中的任务");
+  try {
+    const cancelled = await desktopMethod("cancelRender")();
+    if (!cancelled) {
+      setStatus("没有运行中的任务");
+    }
+  } catch (error) {
+    reportActionError(error);
   }
 });
 
@@ -608,7 +686,7 @@ $("#renderForm").addEventListener("submit", async (event) => {
   $("#outputs").innerHTML = '<p class="empty">正在生成，视频越多等待越久。</p>';
 
   try {
-    const result = await window.desktopApi.renderBatch({
+    const result = await desktopMethod("renderBatch")({
       videoPath: state.videoPath,
       audioFiles: state.audioFiles,
       backgroundAudioPath: state.backgroundAudioPath,
@@ -634,7 +712,13 @@ $("#renderForm").addEventListener("submit", async (event) => {
 });
 
 (async function init() {
-  const saved = await window.desktopApi.readSettings();
+  let saved = {};
+  try {
+    saved = await desktopMethod("readSettings")();
+  } catch (error) {
+    reportActionError(error);
+    return;
+  }
   $("#fishEnabled").checked = Boolean(saved.fishEnabled);
   $("#fishApiKey").value = saved.fishApiKey || "";
   $("#fishReferenceId").value = saved.fishReferenceId || "";
