@@ -270,6 +270,10 @@ strong {
   color: var(--muted);
 }
 
+[hidden] {
+  display: none !important;
+}
+
 .toggle {
   display: flex;
   min-height: 44px;

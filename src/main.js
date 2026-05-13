@@ -98,6 +98,7 @@ async function readSettings() {
       fishTextTemplate: settings.fishTextTemplate || settings.textTemplate || DEFAULT_FISH_TEXT_TEMPLATE,
       fishSpeed: Number(settings.fishSpeed || settings.speed || 1),
       tailEnabled: Boolean(settings.tailEnabled || false),
+      tailMode: settings.tailMode || (settings.tailBuiltPath ? "build" : "direct"),
       tailVideoPath: settings.tailVideoPath || "",
       tailBackgroundPath: settings.tailBackgroundPath || "",
       tailText: settings.tailText || "",
@@ -116,6 +117,7 @@ async function readSettings() {
       fishTextTemplate: DEFAULT_FISH_TEXT_TEMPLATE,
       fishSpeed: 1,
       tailEnabled: false,
+      tailMode: "direct",
       tailVideoPath: "",
       tailBackgroundPath: "",
       tailText: "",
@@ -991,6 +993,14 @@ async function buildFixedTailVideo({ tail, fish, crf, job, sender }) {
 
 async function validateTailForBatch(tail, fish) {
   if (!tail?.enabled) return null;
+  const mode = tail.mode || (tail.builtPath ? "build" : "direct");
+  if (mode === "direct") {
+    const directPath = String(tail.videoPath || "").trim();
+    if (!directPath) throw new Error("请选择已做好的后段视频。");
+    await ensureReadableFile(directPath, "已选择的后段视频不存在或无法读取，请重新选择。");
+    return directPath;
+  }
+
   const builtPath = String(tail.builtPath || "").trim();
   if (!builtPath || !tail.signature) {
     throw new Error("请先点击“生成/更新固定后段”，再开始批量生成。");

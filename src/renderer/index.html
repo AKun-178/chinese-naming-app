@@ -121,22 +121,28 @@
           <section class="panel span-2">
             <div class="panel-title">
               <h2>固定后段</h2>
-              <span>先生成一次，之后每条视频自动拼接</span>
+              <span>可直接拼接，或生成一次后复用</span>
             </div>
             <label class="toggle">
               <input id="tailEnabled" type="checkbox" />
               <span>生成完整视频时拼接固定后段</span>
             </label>
+            <label>后段处理方式
+              <select id="tailMode">
+                <option value="direct">不生成，直接拼接已做好的后段视频</option>
+                <option value="build">生成一次后段音色并复用</option>
+              </select>
+            </label>
             <div class="pickers">
               <button type="button" class="pick" id="pickTailVideo">选择后段画面视频</button>
               <strong id="tailVideoName">尚未选择</strong>
-              <button type="button" class="pick" id="pickTailBackground">选择后段纯背景音/视频</button>
-              <strong id="tailBackgroundName">尚未选择</strong>
+              <button type="button" class="pick tail-build-only" id="pickTailBackground">选择后段纯背景音/视频</button>
+              <strong class="tail-build-only" id="tailBackgroundName">尚未选择</strong>
             </div>
-            <label>后段固定文案
+            <label class="tail-build-only">后段固定文案
               <textarea id="tailTextTemplate" rows="4" placeholder="这里填写后半段固定内容，不要填客户姓名、生日、日期。"></textarea>
             </label>
-            <div class="button-row single">
+            <div class="button-row single tail-build-only">
               <button type="button" class="save" id="buildTailVideo">生成/更新固定后段</button>
             </div>
             <strong class="inline-status" id="tailBuildStatus">还没有生成固定后段</strong>

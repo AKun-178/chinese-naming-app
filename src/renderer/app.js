@@ -170,6 +170,7 @@ function aiSettings() {
 function tailSettings() {
   return {
     enabled: $("#tailEnabled").checked,
+    mode: value("tailMode") || "direct",
     videoPath: state.tailVideoPath,
     backgroundPath: state.tailBackgroundPath,
     text: value("tailTextTemplate").trim(),
@@ -189,6 +190,7 @@ function savedSettings() {
     fishSpeed: fish.speed,
     fishTextTemplate: fish.textTemplate,
     tailEnabled: tail.enabled,
+    tailMode: tail.mode,
     tailVideoPath: tail.videoPath,
     tailBackgroundPath: tail.backgroundPath,
     tailText: tail.text,
@@ -228,9 +230,28 @@ function filenameStem(filePath) {
 }
 
 function markTailNeedsBuild(message = "后段内容已变化，请重新生成固定后段") {
+  if (value("tailMode") === "direct") {
+    state.tailBuiltPath = "";
+    state.tailSignature = "";
+    $("#tailBuildStatus").textContent = state.tailVideoPath ? "将直接拼接已选择的后段视频" : "请选择已做好的后段视频";
+    return;
+  }
   state.tailBuiltPath = "";
   state.tailSignature = "";
   $("#tailBuildStatus").textContent = message;
+}
+
+function updateTailModeUi() {
+  const direct = value("tailMode") === "direct";
+  document.querySelectorAll(".tail-build-only").forEach((node) => {
+    node.hidden = direct;
+  });
+  $("#pickTailVideo").textContent = direct ? "选择已做好的后段视频" : "选择后段画面视频";
+  if (direct) {
+    $("#tailBuildStatus").textContent = state.tailVideoPath ? "将直接拼接已选择的后段视频" : "请选择已做好的后段视频";
+  } else {
+    $("#tailBuildStatus").textContent = state.tailBuiltPath ? "固定后段已生成，可复用" : "还没有生成固定后段";
+  }
 }
 
 function fitLines(ctx, text, width, fontSize) {
@@ -473,7 +494,7 @@ $("#pickTailVideo").addEventListener("click", async () => {
       state.tailVideoPath = file;
       $("#tailVideoName").textContent = basename(file);
       markTailNeedsBuild();
-      setStatus("后段画面视频已选择");
+      setStatus(value("tailMode") === "direct" ? "后段成品视频已选择" : "后段画面视频已选择");
     }
   } catch (error) {
     $("#tailBuildStatus").textContent = reportActionError(error);
@@ -542,6 +563,12 @@ $("#buildTailVideo").addEventListener("click", async () => {
   const fish = fishSettings();
   const tail = tailSettings();
   const button = $("#buildTailVideo");
+  if (tail.mode === "direct") {
+    $("#tailBuildStatus").textContent = "当前是直接拼接模式，不需要生成固定后段";
+    setStatus("无需生成固定后段");
+    showToast("直接拼接模式只需要选择已做好的后段视频");
+    return;
+  }
   if (!fish.apiKey) {
     setStatus("请先填写 Fish API Key");
     showToast("请先填写 Fish API Key");
@@ -674,6 +701,11 @@ $("#paperPreset").addEventListener("click", () => {
   });
 });
 
+$("#tailMode").addEventListener("change", () => {
+  markTailNeedsBuild();
+  updateTailModeUi();
+});
+
 $("#renderForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   const list = customerRows();
@@ -726,6 +758,7 @@ $("#renderForm").addEventListener("submit", async (event) => {
   $("#fishTextTemplate").value = saved.fishTextTemplate || DEFAULT_FISH_TEXT_TEMPLATE;
   $("#fishSpeed").value = saved.fishSpeed || 1;
   $("#tailEnabled").checked = Boolean(saved.tailEnabled);
+  $("#tailMode").value = saved.tailMode || (saved.tailBuiltPath ? "build" : "direct");
   state.tailVideoPath = saved.tailVideoPath || "";
   state.tailBackgroundPath = saved.tailBackgroundPath || "";
   state.tailBuiltPath = saved.tailBuiltPath || "";
@@ -733,7 +766,7 @@ $("#renderForm").addEventListener("submit", async (event) => {
   $("#tailVideoName").textContent = state.tailVideoPath ? basename(state.tailVideoPath) : "尚未选择";
   $("#tailBackgroundName").textContent = state.tailBackgroundPath ? basename(state.tailBackgroundPath) : "尚未选择";
   $("#tailTextTemplate").value = saved.tailText || "";
-  $("#tailBuildStatus").textContent = state.tailBuiltPath ? "固定后段已生成，可复用" : "还没有生成固定后段";
+  updateTailModeUi();
   $("#aliyunApiKey").value = saved.aliyunApiKey || "";
   $("#aliyunModel").value = saved.aliyunModel || "qwen-image-2.0";
   $("#aliyunRegion").value = saved.aliyunRegion || "beijing";
