@@ -5,6 +5,7 @@ const fsp = require("fs/promises");
 const os = require("os");
 const crypto = require("crypto");
 const { spawn } = require("child_process");
+const { Blob } = require("buffer");
 
 const ffmpegStatic = require("ffmpeg-static");
 const ffprobeStatic = require("ffprobe-static");
@@ -86,17 +87,19 @@ async function readSettings() {
     const raw = await fsp.readFile(userSettingsPath(), "utf8");
     const settings = JSON.parse(raw);
     return {
-      fishApiKey: settings.fishApiKey || "",
-      fishReferenceId: settings.fishReferenceId || "",
-      fishModel: settings.fishModel || "s2-pro",
-      fishTextTemplate: settings.fishTextTemplate || DEFAULT_FISH_TEXT_TEMPLATE,
-      fishSpeed: Number(settings.fishSpeed || 1),
+      fishEnabled: Boolean(settings.fishEnabled ?? settings.enabled ?? false),
+      fishApiKey: settings.fishApiKey || settings.apiKey || "",
+      fishReferenceId: settings.fishReferenceId || settings.referenceId || "",
+      fishModel: settings.fishModel || settings.model || "s2-pro",
+      fishTextTemplate: settings.fishTextTemplate || settings.textTemplate || DEFAULT_FISH_TEXT_TEMPLATE,
+      fishSpeed: Number(settings.fishSpeed || settings.speed || 1),
       aliyunApiKey: settings.aliyunApiKey || "",
       aliyunModel: settings.aliyunModel || "qwen-image-2.0",
       aliyunRegion: settings.aliyunRegion || "beijing",
     };
   } catch {
     return {
+      fishEnabled: false,
       fishApiKey: "",
       fishReferenceId: "",
       fishModel: "s2-pro",
@@ -381,7 +384,7 @@ function apiHost(url) {
 }
 
 function networkHint(provider) {
-  if (provider === "Fish Audio") {
+  if (String(provider).startsWith("Fish Audio")) {
     return "请确认这台 Windows 电脑能访问 Fish Audio；如果浏览器靠代理才能访问，请先开启系统代理后再试。";
   }
   if (provider === "阿里云百炼") {
@@ -580,6 +583,67 @@ async function fishAudioTts({ text, apiKey, referenceId, model, speed, outputPat
   return outputPath;
 }
 
+function mimeForAudio(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  const types = {
+    ".mp3": "audio/mpeg",
+    ".wav": "audio/wav",
+    ".m4a": "audio/mp4",
+    ".aac": "audio/aac",
+    ".flac": "audio/flac",
+    ".ogg": "audio/ogg",
+    ".opus": "audio/opus",
+  };
+  return types[ext] || "application/octet-stream";
+}
+
+async function fishCloneVoiceModel({ apiKey, audioPath, title }) {
+  if (!apiKey) throw new Error("请先填写 Fish Audio API Key。");
+  if (!audioPath) throw new Error("请先选择一段授权音频。");
+  await fsp.access(audioPath, fs.constants.R_OK);
+
+  const audioData = await fsp.readFile(audioPath);
+  const fileName = path.basename(audioPath);
+  const modelTitle = String(title || path.basename(audioPath, path.extname(audioPath)) || "自定义音色").trim().slice(0, 80);
+  const form = new FormData();
+  form.append("title", modelTitle);
+  form.append("description", "由视频姓名批量替换软件创建的授权音色");
+  form.append("visibility", "private");
+  form.append("type", "tts");
+  form.append("train_mode", "fast");
+  form.append("enhance_audio_quality", "true");
+  form.append("voices", new Blob([audioData], { type: mimeForAudio(audioPath) }), fileName);
+
+  const response = await requestApi("https://api.fish.audio/model", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: form,
+  }, "Fish Audio 音色克隆", 300000);
+
+  const responseText = await response.text();
+  let payload = {};
+  try {
+    payload = responseText ? JSON.parse(responseText) : {};
+  } catch {
+    payload = {};
+  }
+
+  if (!response.ok) {
+    const detail = payload?.message || payload?.detail || responseText || response.status;
+    throw new Error(`Fish Audio 音色克隆失败：HTTP ${response.status} ${detail}`);
+  }
+
+  const referenceId = payload?._id || payload?.id || payload?.model?._id || payload?.model?.id;
+  if (!referenceId) throw new Error("Fish Audio 已返回结果，但没有找到音色 ID。");
+  return {
+    referenceId,
+    state: payload?.state || "",
+    title: payload?.title || modelTitle,
+  };
+}
+
 function audioClipMap(files) {
   const map = new Map();
   for (const file of files || []) {
@@ -747,6 +811,15 @@ ipcMain.handle("dialog:backgroundAudio", async () => {
   return result.canceled ? null : result.filePaths[0];
 });
 
+ipcMain.handle("dialog:voiceSample", async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: "选择用于克隆音色的人声音频",
+    properties: ["openFile"],
+    filters: [{ name: "音频", extensions: ["mp3", "wav", "m4a", "aac", "flac", "ogg", "opus"] }],
+  });
+  return result.canceled ? null : result.filePaths[0];
+});
+
 ipcMain.handle("dialog:output", async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
     title: "选择导出文件夹",
@@ -754,6 +827,8 @@ ipcMain.handle("dialog:output", async () => {
   });
   return result.canceled ? null : result.filePaths[0];
 });
+
+ipcMain.handle("fish:cloneVoice", async (_event, payload) => fishCloneVoiceModel(payload));
 
 ipcMain.handle("render:batch", async (event, payload) => {
   if (activeRenderJob) throw new Error("已有任务正在生成，请先中断或等待完成。");

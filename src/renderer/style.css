@@ -183,6 +183,14 @@ textarea {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
+.action-field {
+  display: grid;
+  align-content: end;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .pickers {
   display: grid;
   grid-template-columns: 160px minmax(0, 1fr);
@@ -228,6 +236,12 @@ textarea {
 .danger:disabled {
   cursor: not-allowed;
   opacity: 0.46;
+}
+
+.pick:disabled,
+.save:disabled {
+  cursor: wait;
+  opacity: 0.62;
 }
 
 .button-row,

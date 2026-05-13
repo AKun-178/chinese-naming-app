@@ -148,8 +148,14 @@ function aiSettings() {
 }
 
 function savedSettings() {
+  const fish = fishSettings();
   return {
-    ...fishSettings(),
+    fishEnabled: fish.enabled,
+    fishApiKey: fish.apiKey,
+    fishReferenceId: fish.referenceId,
+    fishModel: fish.model,
+    fishSpeed: fish.speed,
+    fishTextTemplate: fish.textTemplate,
     aliyunApiKey: value("aliyunApiKey").trim(),
     aliyunModel: value("aliyunModel"),
     aliyunRegion: value("aliyunRegion"),
@@ -177,6 +183,10 @@ function setRendering(isRendering) {
 
 function basename(filePath) {
   return String(filePath || "").split(/[\\/]/u).pop() || "";
+}
+
+function filenameStem(filePath) {
+  return basename(filePath).replace(/\.[^.]+$/u, "");
 }
 
 function fitLines(ctx, text, width, fontSize) {
@@ -411,6 +421,45 @@ $("#openFishApi").addEventListener("click", async () => {
   await window.desktopApi.openExternal("fishApi");
 });
 
+$("#cloneFishVoice").addEventListener("click", async () => {
+  const apiKey = value("fishApiKey").trim();
+  const button = $("#cloneFishVoice");
+  const status = $("#fishCloneStatus");
+  if (!apiKey) {
+    setStatus("请先填写 Fish API Key");
+    showToast("请先填写 Fish API Key");
+    return;
+  }
+
+  try {
+    button.disabled = true;
+    status.textContent = "请选择一段清晰人声音频";
+    const audioPath = await window.desktopApi.selectVoiceSample();
+    if (!audioPath) {
+      status.textContent = "已取消选择";
+      return;
+    }
+
+    const title = value("fishVoiceTitle").trim() || filenameStem(audioPath) || "自定义音色";
+    status.textContent = "正在克隆音色，可能需要几十秒";
+    setStatus("正在克隆音色");
+    const result = await window.desktopApi.cloneFishVoice({ apiKey, audioPath, title });
+    $("#fishReferenceId").value = result.referenceId || "";
+    $("#fishEnabled").checked = true;
+    await window.desktopApi.writeSettings(savedSettings());
+    status.textContent = `音色已创建并保存：${result.referenceId}`;
+    setStatus("音色已保存");
+    showToast("音色克隆成功，ID 已自动填入");
+  } catch (error) {
+    const message = error.message || String(error);
+    status.textContent = message;
+    setStatus("音色克隆失败");
+    showToast(message);
+  } finally {
+    button.disabled = false;
+  }
+});
+
 $("#openAliyunApi").addEventListener("click", async () => {
   await window.desktopApi.openExternal("aliyunApi");
 });
@@ -481,6 +530,7 @@ $("#renderForm").addEventListener("submit", async (event) => {
 
 (async function init() {
   const saved = await window.desktopApi.readSettings();
+  $("#fishEnabled").checked = Boolean(saved.fishEnabled);
   $("#fishApiKey").value = saved.fishApiKey || "";
   $("#fishReferenceId").value = saved.fishReferenceId || "";
   $("#fishModel").value = saved.fishModel || "s2-pro";

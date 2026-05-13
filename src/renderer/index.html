@@ -94,6 +94,13 @@
               <label>音色 reference_id<input id="fishReferenceId" type="text" /></label>
             </div>
             <div class="fields two">
+              <label>音色名称<input id="fishVoiceTitle" type="text" placeholder="例如：弘一道长" /></label>
+              <div class="action-field">
+                <button type="button" class="save" id="cloneFishVoice">上传音频并克隆音色</button>
+                <strong id="fishCloneStatus">选择 10 秒以上清晰人声，成功后自动填入音色 ID</strong>
+              </div>
+            </div>
+            <div class="fields two">
               <label>模型
                 <select id="fishModel">
                   <option value="s2-pro">s2-pro</option>
