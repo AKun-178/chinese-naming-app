@@ -72,6 +72,11 @@ function ffprobePath() {
   return unpacked || "ffprobe";
 }
 
+function defaultBackgroundAudioPath() {
+  const candidate = resourcePath("assets", "default-background.mp4");
+  return fs.existsSync(candidate) ? candidate : "";
+}
+
 function userSettingsPath() {
   return path.join(app.getPath("userData"), "settings.json");
 }
@@ -760,6 +765,7 @@ ipcMain.handle("render:batch", async (event, payload) => {
   if (payload.ai?.enabled && !payload.ai.apiKey) throw new Error("请先填写百炼 API Key，画面手写替换需要调用图片 API。");
   if (payload.fish?.enabled && !payload.fish.apiKey) throw new Error("请先填写 Fish Audio API Key。");
   if (payload.fish?.enabled && !payload.fish.referenceId) throw new Error("请先填写 Fish Audio 音色 reference_id。");
+  const backgroundAudioPath = payload.backgroundAudioPath || defaultBackgroundAudioPath();
 
   const renderJob = createRenderJob(event.sender);
   activeRenderJob = renderJob;
@@ -834,7 +840,7 @@ ipcMain.handle("render:batch", async (event, payload) => {
         overlayDataUrl: payload.overlays?.[customer.id] || payload.overlays?.[name],
         overlayFilePath,
         audioClip,
-        backgroundAudioPath: payload.backgroundAudioPath,
+        backgroundAudioPath,
         settings: payload.settings,
         outputDir,
         jobDir,
