@@ -82,6 +82,10 @@ function userSettingsPath() {
   return path.join(app.getPath("userData"), "settings.json");
 }
 
+function tailCacheDir() {
+  return path.join(app.getPath("userData"), "fixed-tail");
+}
+
 async function readSettings() {
   try {
     const raw = await fsp.readFile(userSettingsPath(), "utf8");
@@ -93,6 +97,12 @@ async function readSettings() {
       fishModel: settings.fishModel || settings.model || "s2-pro",
       fishTextTemplate: settings.fishTextTemplate || settings.textTemplate || DEFAULT_FISH_TEXT_TEMPLATE,
       fishSpeed: Number(settings.fishSpeed || settings.speed || 1),
+      tailEnabled: Boolean(settings.tailEnabled || false),
+      tailVideoPath: settings.tailVideoPath || "",
+      tailBackgroundPath: settings.tailBackgroundPath || "",
+      tailText: settings.tailText || "",
+      tailBuiltPath: settings.tailBuiltPath || "",
+      tailSignature: settings.tailSignature || "",
       aliyunApiKey: settings.aliyunApiKey || "",
       aliyunModel: settings.aliyunModel || "qwen-image-2.0",
       aliyunRegion: settings.aliyunRegion || "beijing",
@@ -105,6 +115,12 @@ async function readSettings() {
       fishModel: "s2-pro",
       fishTextTemplate: DEFAULT_FISH_TEXT_TEMPLATE,
       fishSpeed: 1,
+      tailEnabled: false,
+      tailVideoPath: "",
+      tailBackgroundPath: "",
+      tailText: "",
+      tailBuiltPath: "",
+      tailSignature: "",
       aliyunApiKey: "",
       aliyunModel: "qwen-image-2.0",
       aliyunRegion: "beijing",
@@ -123,6 +139,35 @@ function safeName(value) {
     .trim()
     .replace(/[^\w\-\u4e00-\u9fff]+/gu, "_")
     .replace(/^_+|_+$/g, "") || "name";
+}
+
+async function fileFingerprint(filePath) {
+  const stat = await fsp.stat(filePath);
+  return {
+    path: filePath,
+    size: stat.size,
+    mtimeMs: Math.round(stat.mtimeMs),
+  };
+}
+
+async function ensureReadableFile(filePath, message) {
+  try {
+    await fsp.access(filePath, fs.constants.R_OK);
+  } catch {
+    throw new Error(message);
+  }
+}
+
+async function tailBuildSignature({ tail, fish }) {
+  const payload = {
+    video: await fileFingerprint(tail.videoPath),
+    background: await fileFingerprint(tail.backgroundPath),
+    text: String(tail.text || "").trim(),
+    referenceId: String(fish?.referenceId || "").trim(),
+    model: String(fish?.model || "s2-pro"),
+    speed: Number(fish?.speed || 1),
+  };
+  return crypto.createHash("sha256").update(JSON.stringify(payload)).digest("hex");
 }
 
 function asNumber(value, fallback = 0) {
@@ -319,6 +364,59 @@ async function mediaDuration(filePath, job) {
       if (job?.cancelled) finish(reject, new Error("任务已中断。"));
       else if (code === 0) finish(resolve, Number(stdout.trim()) || 0);
       else finish(reject, new Error(stderr || "无法读取媒体时长。"));
+    });
+  });
+}
+
+async function videoSize(filePath, job) {
+  return new Promise((resolve, reject) => {
+    if (job?.cancelled) {
+      reject(new Error("任务已中断。"));
+      return;
+    }
+
+    const args = [
+      "-v",
+      "error",
+      "-select_streams",
+      "v:0",
+      "-show_entries",
+      "stream=width,height",
+      "-of",
+      "json",
+      filePath,
+    ];
+    const child = spawn(ffprobePath(), args, { windowsHide: true });
+    if (job) job.children.add(child);
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const finish = (handler, value) => {
+      if (settled) return;
+      settled = true;
+      if (job) job.children.delete(child);
+      handler(value);
+    };
+    child.stdout.on("data", (chunk) => (stdout += chunk.toString()));
+    child.stderr.on("data", (chunk) => (stderr += chunk.toString()));
+    child.on("error", (error) => {
+      finish(reject, job?.cancelled ? new Error("任务已中断。") : error);
+    });
+    child.on("close", (code) => {
+      if (job?.cancelled) finish(reject, new Error("任务已中断。"));
+      else if (code === 0) {
+        try {
+          const stream = JSON.parse(stdout)?.streams?.[0] || {};
+          const width = Number(stream.width) || 0;
+          const height = Number(stream.height) || 0;
+          if (!width || !height) throw new Error("没有找到视频画面。");
+          finish(resolve, { width, height });
+        } catch (error) {
+          finish(reject, error);
+        }
+      } else {
+        finish(reject, new Error(stderr || "无法读取视频尺寸。"));
+      }
     });
   });
 }
@@ -652,7 +750,11 @@ function audioClipMap(files) {
   return map;
 }
 
-async function renderOne({ videoPath, name, overlayDataUrl, overlayFilePath, audioClip, backgroundAudioPath, settings, outputDir, jobDir, job }) {
+function finalVideoOutputPath(videoPath, name, outputDir) {
+  return path.join(outputDir, `${path.basename(videoPath, path.extname(videoPath))}_${safeName(name)}.mp4`);
+}
+
+async function renderOne({ videoPath, name, overlayDataUrl, overlayFilePath, audioClip, backgroundAudioPath, settings, outputDir, outputPath, jobDir, job }) {
   assertNotCancelled(job);
   const id = crypto.randomUUID();
   const clean = safeName(name);
@@ -684,7 +786,7 @@ async function renderOne({ videoPath, name, overlayDataUrl, overlayFilePath, aud
   const boxColor = colorToFfmpeg(settings.boxColor || "black");
   const boxAlpha = clamp(asNumber(settings.boxAlpha, 0.86), 0, 1);
   const crf = Math.round(clamp(asNumber(settings.crf, 18), 10, 35));
-  const outputPath = path.join(outputDir, `${path.basename(videoPath, path.extname(videoPath))}_${clean}.mp4`);
+  const finalPath = outputPath || finalVideoOutputPath(videoPath, name, outputDir);
   const enable = `between(t\\,${start}\\,${end})`;
 
   const args = [
@@ -757,10 +859,204 @@ async function renderOne({ videoPath, name, overlayDataUrl, overlayFilePath, aud
     "-shortest",
     "-movflags",
     "+faststart",
-    outputPath,
+    finalPath,
   );
 
   await runProcess(ffmpegPath(), args, null, job);
+  return finalPath;
+}
+
+async function renderFixedTailVideo({ videoPath, backgroundPath, voicePath, outputPath, crf, job }) {
+  assertNotCancelled(job);
+  const duration = await mediaDuration(videoPath, job);
+  if (duration <= 0) throw new Error("后段画面视频无法读取时长。");
+  if (!(await hasAudio(backgroundPath, job))) {
+    throw new Error("后段纯背景文件没有可用声音，请选择带背景声的音频或视频。");
+  }
+
+  const voiceDuration = await mediaDuration(voicePath, job);
+  const safeDuration = Math.max(0.05, duration);
+  const safeCrf = Math.round(clamp(asNumber(crf, 18), 10, 35));
+  const filterComplex =
+    `[0:v]trim=0:${safeDuration},setpts=PTS-STARTPTS,scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1,fps=30,format=yuv420p[v];` +
+    `[1:a]aresample=48000,volume=0.72,atrim=0:${safeDuration},asetpts=PTS-STARTPTS[bgm];` +
+    `[2:a]aresample=48000,volume=1.35,atrim=0:${safeDuration},asetpts=PTS-STARTPTS,apad,atrim=0:${safeDuration}[voice];` +
+    "[bgm][voice]amix=inputs=2:duration=first:dropout_transition=0[a]";
+
+  await runProcess(ffmpegPath(), [
+    "-y",
+    "-i",
+    videoPath,
+    "-stream_loop",
+    "-1",
+    "-i",
+    backgroundPath,
+    "-i",
+    voicePath,
+    "-filter_complex",
+    filterComplex,
+    "-map",
+    "[v]",
+    "-map",
+    "[a]",
+    "-t",
+    String(safeDuration),
+    "-c:v",
+    "libx264",
+    "-preset",
+    "medium",
+    "-crf",
+    String(safeCrf),
+    "-pix_fmt",
+    "yuv420p",
+    "-c:a",
+    "aac",
+    "-b:a",
+    "192k",
+    "-movflags",
+    "+faststart",
+    outputPath,
+  ], null, job);
+
+  return voiceDuration > safeDuration + 0.2
+    ? "固定后段已生成，但语音比后段视频长，结尾会被截断"
+    : "";
+}
+
+async function buildFixedTailVideo({ tail, fish, crf, job, sender }) {
+  const videoPath = String(tail?.videoPath || "").trim();
+  const backgroundPath = String(tail?.backgroundPath || "").trim();
+  const text = String(tail?.text || "").trim();
+  if (!videoPath) throw new Error("请选择后段画面视频。");
+  if (!backgroundPath) throw new Error("请选择后段纯背景音/视频。");
+  if (!text) throw new Error("请填写后段固定文案。");
+  if (!fish?.apiKey) throw new Error("请填写 Fish Audio API Key。");
+  if (!fish?.referenceId) throw new Error("请填写 Fish Audio 音色 reference_id。");
+  await ensureReadableFile(videoPath, "后段画面视频不存在或无法读取，请重新选择。");
+  await ensureReadableFile(backgroundPath, "后段纯背景音/视频不存在或无法读取，请重新选择。");
+
+  const normalizedTail = { videoPath, backgroundPath, text };
+  const signature = await tailBuildSignature({ tail: normalizedTail, fish });
+  const cacheDir = tailCacheDir();
+  await fsp.mkdir(cacheDir, { recursive: true });
+  const id = signature.slice(0, 16);
+  const voicePath = path.join(cacheDir, `fixed-tail-${id}.mp3`);
+  const outputPath = path.join(cacheDir, `fixed-tail-${id}.mp4`);
+
+  if (fs.existsSync(outputPath)) {
+    return {
+      outputPath,
+      signature,
+      reused: true,
+      warning: "",
+    };
+  }
+
+  sender?.send("render:progress", {
+    index: 0,
+    total: 1,
+    message: "正在生成固定后段语音",
+  });
+  await fishAudioTts({
+    text,
+    apiKey: fish.apiKey,
+    referenceId: fish.referenceId,
+    model: fish.model,
+    speed: fish.speed,
+    outputPath: voicePath,
+    job,
+  });
+
+  sender?.send("render:progress", {
+    index: 0,
+    total: 1,
+    message: "正在合成固定后段",
+  });
+  const warning = await renderFixedTailVideo({
+    videoPath,
+    backgroundPath,
+    voicePath,
+    outputPath,
+    crf,
+    job,
+  });
+
+  return {
+    outputPath,
+    signature,
+    reused: false,
+    warning,
+  };
+}
+
+async function validateTailForBatch(tail, fish) {
+  if (!tail?.enabled) return null;
+  const builtPath = String(tail.builtPath || "").trim();
+  if (!builtPath || !tail.signature) {
+    throw new Error("请先点击“生成/更新固定后段”，再开始批量生成。");
+  }
+  await ensureReadableFile(builtPath, "固定后段成品文件找不到了，请重新生成固定后段。");
+
+  if (tail.videoPath && tail.backgroundPath && tail.text) {
+    try {
+      const expected = await tailBuildSignature({ tail, fish });
+      if (expected !== tail.signature) {
+        throw new Error("固定后段内容或音色已变化，请先重新生成固定后段。");
+      }
+    } catch (error) {
+      if (error.message.includes("固定后段内容")) throw error;
+    }
+  }
+  return builtPath;
+}
+
+async function concatWithFixedTail({ frontPath, tailPath, outputPath, crf, job }) {
+  assertNotCancelled(job);
+  const size = await videoSize(frontPath, job);
+  const frontDuration = Math.max(0.05, await mediaDuration(frontPath, job));
+  const tailDuration = Math.max(0.05, await mediaDuration(tailPath, job));
+  const width = Math.max(2, Math.floor(size.width / 2) * 2);
+  const height = Math.max(2, Math.floor(size.height / 2) * 2);
+  const scalePad = `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p`;
+  const safeCrf = Math.round(clamp(asNumber(crf, 18), 10, 35));
+  const filterComplex =
+    `[0:v]trim=0:${frontDuration},setpts=PTS-STARTPTS,${scalePad}[v0];` +
+    `[1:v]trim=0:${tailDuration},setpts=PTS-STARTPTS,${scalePad}[v1];` +
+    `[0:a]atrim=0:${frontDuration},asetpts=PTS-STARTPTS,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a0];` +
+    `[1:a]atrim=0:${tailDuration},asetpts=PTS-STARTPTS,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a1];` +
+    "[v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]";
+
+  await runProcess(ffmpegPath(), [
+    "-y",
+    "-i",
+    frontPath,
+    "-i",
+    tailPath,
+    "-filter_complex",
+    filterComplex,
+    "-map",
+    "[v]",
+    "-map",
+    "[a]",
+    "-c:v",
+    "libx264",
+    "-preset",
+    "medium",
+    "-crf",
+    String(safeCrf),
+    "-pix_fmt",
+    "yuv420p",
+    "-c:a",
+    "aac",
+    "-b:a",
+    "192k",
+    "-t",
+    String(frontDuration + tailDuration + 0.05),
+    "-movflags",
+    "+faststart",
+    outputPath,
+  ], null, job);
+
   return outputPath;
 }
 
@@ -811,6 +1107,24 @@ ipcMain.handle("dialog:backgroundAudio", async () => {
   return result.canceled ? null : result.filePaths[0];
 });
 
+ipcMain.handle("dialog:tailVideo", async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: "选择固定后段画面视频",
+    properties: ["openFile"],
+    filters: [{ name: "视频", extensions: ["mp4", "mov", "m4v", "mkv", "webm"] }],
+  });
+  return result.canceled ? null : result.filePaths[0];
+});
+
+ipcMain.handle("dialog:tailBackground", async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: "选择固定后段纯背景音或视频",
+    properties: ["openFile"],
+    filters: [{ name: "音频或视频", extensions: ["wav", "mp3", "m4a", "aac", "flac", "ogg", "mp4", "mov", "m4v", "mkv", "webm"] }],
+  });
+  return result.canceled ? null : result.filePaths[0];
+});
+
 ipcMain.handle("dialog:voiceSample", async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
     title: "选择用于克隆音色的人声音频",
@@ -830,6 +1144,32 @@ ipcMain.handle("dialog:output", async () => {
 
 ipcMain.handle("fish:cloneVoice", async (_event, payload) => fishCloneVoiceModel(payload));
 
+ipcMain.handle("tail:build", async (event, payload) => {
+  if (activeRenderJob) throw new Error("已有任务正在生成，请先中断或等待完成。");
+
+  const renderJob = createRenderJob(event.sender);
+  activeRenderJob = renderJob;
+  try {
+    const result = await buildFixedTailVideo({
+      tail: payload.tail,
+      fish: payload.fish,
+      crf: payload.crf,
+      job: renderJob,
+      sender: event.sender,
+    });
+    event.sender.send("render:progress", {
+      index: 1,
+      total: 1,
+      message: result.reused ? "固定后段已存在，可复用" : "固定后段已完成",
+    });
+    return result;
+  } finally {
+    if (activeRenderJob === renderJob) {
+      activeRenderJob = null;
+    }
+  }
+});
+
 ipcMain.handle("render:batch", async (event, payload) => {
   if (activeRenderJob) throw new Error("已有任务正在生成，请先中断或等待完成。");
 
@@ -840,6 +1180,7 @@ ipcMain.handle("render:batch", async (event, payload) => {
   if (payload.ai?.enabled && !payload.ai.apiKey) throw new Error("请先填写百炼 API Key，画面手写替换需要调用图片 API。");
   if (payload.fish?.enabled && !payload.fish.apiKey) throw new Error("请先填写 Fish Audio API Key。");
   if (payload.fish?.enabled && !payload.fish.referenceId) throw new Error("请先填写 Fish Audio 音色 reference_id。");
+  const fixedTailPath = await validateTailForBatch(payload.tail, payload.fish);
   const backgroundAudioPath = payload.backgroundAudioPath || defaultBackgroundAudioPath();
 
   const renderJob = createRenderJob(event.sender);
@@ -909,7 +1250,11 @@ ipcMain.handle("render:batch", async (event, payload) => {
       }
 
       assertNotCancelled(renderJob);
-      const outputPath = await renderOne({
+      const finalOutputPath = finalVideoOutputPath(payload.videoPath, name, outputDir);
+      const frontOutputPath = fixedTailPath
+        ? path.join(jobDir, `${safeName(name)}_front.mp4`)
+        : finalOutputPath;
+      const frontPath = await renderOne({
         videoPath: payload.videoPath,
         name,
         overlayDataUrl: payload.overlays?.[customer.id] || payload.overlays?.[name],
@@ -918,11 +1263,29 @@ ipcMain.handle("render:batch", async (event, payload) => {
         backgroundAudioPath,
         settings: payload.settings,
         outputDir,
+        outputPath: frontOutputPath,
         jobDir,
         job: renderJob,
       });
 
-      outputs.push({ name, outputPath, audioMatched, generatedByFish, generatedByAi });
+      let outputPath = frontPath;
+      if (fixedTailPath) {
+        event.sender.send("render:progress", {
+          index,
+          total: customers.length,
+          name,
+          message: `正在拼接 ${name} 的固定后段`,
+        });
+        outputPath = await concatWithFixedTail({
+          frontPath,
+          tailPath: fixedTailPath,
+          outputPath: finalOutputPath,
+          crf: payload.settings?.crf,
+          job: renderJob,
+        });
+      }
+
+      outputs.push({ name, outputPath, audioMatched, generatedByFish, generatedByAi, tailAppended: Boolean(fixedTailPath) });
     }
 
     event.sender.send("render:progress", {

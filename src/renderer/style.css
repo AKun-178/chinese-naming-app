@@ -165,7 +165,8 @@ textarea {
 }
 
 #visualTextTemplate,
-#fishTextTemplate {
+#fishTextTemplate,
+#tailTextTemplate {
   min-height: 82px;
 }
 
@@ -252,11 +253,21 @@ textarea {
   margin-top: 12px;
 }
 
+.button-row.single {
+  grid-template-columns: 1fr;
+}
+
 strong {
   overflow: hidden;
   font-size: 13px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.inline-status {
+  display: block;
+  margin-top: 10px;
+  color: var(--muted);
 }
 
 .toggle {

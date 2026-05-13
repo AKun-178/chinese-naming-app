@@ -120,6 +120,30 @@
 
           <section class="panel span-2">
             <div class="panel-title">
+              <h2>固定后段</h2>
+              <span>先生成一次，之后每条视频自动拼接</span>
+            </div>
+            <label class="toggle">
+              <input id="tailEnabled" type="checkbox" />
+              <span>生成完整视频时拼接固定后段</span>
+            </label>
+            <div class="pickers">
+              <button type="button" class="pick" id="pickTailVideo">选择后段画面视频</button>
+              <strong id="tailVideoName">尚未选择</strong>
+              <button type="button" class="pick" id="pickTailBackground">选择后段纯背景音/视频</button>
+              <strong id="tailBackgroundName">尚未选择</strong>
+            </div>
+            <label>后段固定文案
+              <textarea id="tailTextTemplate" rows="4" placeholder="这里填写后半段固定内容，不要填客户姓名、生日、日期。"></textarea>
+            </label>
+            <div class="button-row single">
+              <button type="button" class="save" id="buildTailVideo">生成/更新固定后段</button>
+            </div>
+            <strong class="inline-status" id="tailBuildStatus">还没有生成固定后段</strong>
+          </section>
+
+          <section class="panel span-2">
+            <div class="panel-title">
               <h2>图片 API</h2>
               <span>自动模仿原图手写并替换三行字</span>
             </div>

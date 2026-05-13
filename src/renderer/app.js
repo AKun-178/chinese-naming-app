@@ -4,6 +4,10 @@ const state = {
   videoPath: "",
   audioFiles: [],
   backgroundAudioPath: "",
+  tailVideoPath: "",
+  tailBackgroundPath: "",
+  tailBuiltPath: "",
+  tailSignature: "",
   outputDir: "",
   toastTimer: null,
 };
@@ -147,8 +151,20 @@ function aiSettings() {
   };
 }
 
+function tailSettings() {
+  return {
+    enabled: $("#tailEnabled").checked,
+    videoPath: state.tailVideoPath,
+    backgroundPath: state.tailBackgroundPath,
+    text: value("tailTextTemplate").trim(),
+    builtPath: state.tailBuiltPath,
+    signature: state.tailSignature,
+  };
+}
+
 function savedSettings() {
   const fish = fishSettings();
+  const tail = tailSettings();
   return {
     fishEnabled: fish.enabled,
     fishApiKey: fish.apiKey,
@@ -156,6 +172,12 @@ function savedSettings() {
     fishModel: fish.model,
     fishSpeed: fish.speed,
     fishTextTemplate: fish.textTemplate,
+    tailEnabled: tail.enabled,
+    tailVideoPath: tail.videoPath,
+    tailBackgroundPath: tail.backgroundPath,
+    tailText: tail.text,
+    tailBuiltPath: tail.builtPath,
+    tailSignature: tail.signature,
     aliyunApiKey: value("aliyunApiKey").trim(),
     aliyunModel: value("aliyunModel"),
     aliyunRegion: value("aliyunRegion"),
@@ -187,6 +209,12 @@ function basename(filePath) {
 
 function filenameStem(filePath) {
   return basename(filePath).replace(/\.[^.]+$/u, "");
+}
+
+function markTailNeedsBuild(message = "后段内容已变化，请重新生成固定后段") {
+  state.tailBuiltPath = "";
+  state.tailSignature = "";
+  $("#tailBuildStatus").textContent = message;
 }
 
 function fitLines(ctx, text, width, fontSize) {
@@ -364,7 +392,8 @@ function renderOutputs(result) {
     card.className = "output";
     const audioText = output.generatedByFish ? "Fish 生成音频" : output.audioMatched ? "已换音频" : "原音频";
     const visualText = output.generatedByAi ? "AI 手写增强" : "本地手写";
-    const stateText = `${visualText} · ${audioText}`;
+    const tailText = output.tailAppended ? "已拼接固定后段" : "仅前段";
+    const stateText = `${visualText} · ${audioText} · ${tailText}`;
     card.innerHTML = `<h3>${output.name} · ${stateText}</h3><code>${output.outputPath}</code>`;
     root.appendChild(card);
   }
@@ -397,6 +426,24 @@ $("#pickBackgroundAudio").addEventListener("click", async () => {
   }
 });
 
+$("#pickTailVideo").addEventListener("click", async () => {
+  const file = await window.desktopApi.selectTailVideo();
+  if (file) {
+    state.tailVideoPath = file;
+    $("#tailVideoName").textContent = basename(file);
+    markTailNeedsBuild();
+  }
+});
+
+$("#pickTailBackground").addEventListener("click", async () => {
+  const file = await window.desktopApi.selectTailBackground();
+  if (file) {
+    state.tailBackgroundPath = file;
+    $("#tailBackgroundName").textContent = basename(file);
+    markTailNeedsBuild();
+  }
+});
+
 $("#pickOutput").addEventListener("click", async () => {
   const folder = await window.desktopApi.selectOutput();
   if (folder) {
@@ -419,6 +466,54 @@ $("#saveAiSettings").addEventListener("click", async () => {
 
 $("#openFishApi").addEventListener("click", async () => {
   await window.desktopApi.openExternal("fishApi");
+});
+
+$("#buildTailVideo").addEventListener("click", async () => {
+  const fish = fishSettings();
+  const tail = tailSettings();
+  const button = $("#buildTailVideo");
+  if (!fish.apiKey) {
+    setStatus("请先填写 Fish API Key");
+    showToast("请先填写 Fish API Key");
+    return;
+  }
+  if (!fish.referenceId) {
+    setStatus("请先填写音色 ID");
+    showToast("请先填写 Fish 音色 reference_id");
+    return;
+  }
+  if (!tail.videoPath || !tail.backgroundPath || !tail.text) {
+    setStatus("请先补齐固定后段");
+    showToast("请选择后段视频、纯背景，并填写后段文案");
+    return;
+  }
+
+  try {
+    button.disabled = true;
+    setRendering(true);
+    $("#tailBuildStatus").textContent = "正在生成固定后段";
+    setStatus("正在生成固定后段");
+    const result = await window.desktopApi.buildTailVideo({
+      tail,
+      fish,
+      crf: value("crf"),
+    });
+    state.tailBuiltPath = result.outputPath || "";
+    state.tailSignature = result.signature || "";
+    $("#tailEnabled").checked = true;
+    $("#tailBuildStatus").textContent = result.warning || "固定后段已生成，可复用";
+    await window.desktopApi.writeSettings(savedSettings());
+    setStatus("固定后段已保存");
+    showToast("固定后段生成成功");
+  } catch (error) {
+    const message = error.message || String(error);
+    $("#tailBuildStatus").textContent = message;
+    setStatus(message.includes("中断") ? "已中断" : "固定后段失败");
+    showToast(message);
+  } finally {
+    button.disabled = false;
+    setRendering(false);
+  }
 });
 
 $("#cloneFishVoice").addEventListener("click", async () => {
@@ -446,6 +541,7 @@ $("#cloneFishVoice").addEventListener("click", async () => {
     const result = await window.desktopApi.cloneFishVoice({ apiKey, audioPath, title });
     $("#fishReferenceId").value = result.referenceId || "";
     $("#fishEnabled").checked = true;
+    markTailNeedsBuild("音色已变化，固定后段需要重新生成");
     await window.desktopApi.writeSettings(savedSettings());
     status.textContent = `音色已创建并保存：${result.referenceId}`;
     setStatus("音色已保存");
@@ -492,6 +588,14 @@ $("#paperPreset").addEventListener("click", () => {
   setStatus("黄纸位置预设已恢复");
 });
 
+["tailTextTemplate", "fishReferenceId", "fishModel", "fishSpeed"].forEach((id) => {
+  $(`#${id}`).addEventListener("input", () => {
+    if (state.tailBuiltPath || state.tailSignature) {
+      markTailNeedsBuild();
+    }
+  });
+});
+
 $("#renderForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   const list = customerRows();
@@ -514,6 +618,7 @@ $("#renderForm").addEventListener("submit", async (event) => {
       settings: current,
       fish: fishSettings(),
       ai: aiSettings(),
+      tail: tailSettings(),
       overlays,
     });
     renderWarnings(result.warnings);
@@ -536,6 +641,15 @@ $("#renderForm").addEventListener("submit", async (event) => {
   $("#fishModel").value = saved.fishModel || "s2-pro";
   $("#fishTextTemplate").value = saved.fishTextTemplate || DEFAULT_FISH_TEXT_TEMPLATE;
   $("#fishSpeed").value = saved.fishSpeed || 1;
+  $("#tailEnabled").checked = Boolean(saved.tailEnabled);
+  state.tailVideoPath = saved.tailVideoPath || "";
+  state.tailBackgroundPath = saved.tailBackgroundPath || "";
+  state.tailBuiltPath = saved.tailBuiltPath || "";
+  state.tailSignature = saved.tailSignature || "";
+  $("#tailVideoName").textContent = state.tailVideoPath ? basename(state.tailVideoPath) : "尚未选择";
+  $("#tailBackgroundName").textContent = state.tailBackgroundPath ? basename(state.tailBackgroundPath) : "尚未选择";
+  $("#tailTextTemplate").value = saved.tailText || "";
+  $("#tailBuildStatus").textContent = state.tailBuiltPath ? "固定后段已生成，可复用" : "还没有生成固定后段";
   $("#aliyunApiKey").value = saved.aliyunApiKey || "";
   $("#aliyunModel").value = saved.aliyunModel || "qwen-image-2.0";
   $("#aliyunRegion").value = saved.aliyunRegion || "beijing";
