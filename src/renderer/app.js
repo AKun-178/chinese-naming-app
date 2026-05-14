@@ -7,6 +7,7 @@ const state = {
   tailVideoPath: "",
   tailBackgroundPath: "",
   tailBuiltPath: "",
+  tailExportPath: "",
   tailSignature: "",
   outputDir: "",
   toastTimer: null,
@@ -175,6 +176,7 @@ function tailSettings() {
     backgroundPath: state.tailBackgroundPath,
     text: value("tailTextTemplate").trim(),
     builtPath: state.tailBuiltPath,
+    exportPath: state.tailExportPath,
     signature: state.tailSignature,
   };
 }
@@ -195,6 +197,7 @@ function savedSettings() {
     tailBackgroundPath: tail.backgroundPath,
     tailText: tail.text,
     tailBuiltPath: tail.builtPath,
+    tailExportPath: tail.exportPath,
     tailSignature: tail.signature,
     aliyunApiKey: value("aliyunApiKey").trim(),
     aliyunModel: value("aliyunModel"),
@@ -229,16 +232,21 @@ function filenameStem(filePath) {
   return basename(filePath).replace(/\.[^.]+$/u, "");
 }
 
-function markTailNeedsBuild(message = "后段内容已变化，请重新生成固定后段") {
-  if (value("tailMode") === "direct") {
+function markTailNeedsBuild(message = "后段内容已变化，请重新生成固定后段", options = {}) {
+  if (!options.keepBuilt) {
     state.tailBuiltPath = "";
+    state.tailExportPath = "";
     state.tailSignature = "";
-    $("#tailBuildStatus").textContent = state.tailVideoPath ? "将直接拼接已选择的后段视频" : "请选择已做好的后段视频";
+  }
+  if (value("tailMode") === "direct") {
+    $("#tailBuildStatus").textContent = state.tailVideoPath
+      ? "将直接拼接已选择的后段视频"
+      : state.tailBuiltPath
+        ? "已有生成好的固定后段，可切回生成复用模式使用"
+        : "请选择已做好的后段视频";
     return;
   }
-  state.tailBuiltPath = "";
-  state.tailSignature = "";
-  $("#tailBuildStatus").textContent = message;
+  $("#tailBuildStatus").textContent = state.tailBuiltPath ? "固定后段已生成，可复用" : message;
 }
 
 function updateTailModeUi() {
@@ -248,9 +256,15 @@ function updateTailModeUi() {
   });
   $("#pickTailVideo").textContent = direct ? "选择已做好的后段视频" : "选择后段画面视频";
   if (direct) {
-    $("#tailBuildStatus").textContent = state.tailVideoPath ? "将直接拼接已选择的后段视频" : "请选择已做好的后段视频";
+    $("#tailBuildStatus").textContent = state.tailVideoPath
+      ? "将直接拼接已选择的后段视频"
+      : state.tailBuiltPath
+        ? "已有生成好的固定后段，可切回生成复用模式使用"
+        : "请选择已做好的后段视频";
   } else {
-    $("#tailBuildStatus").textContent = state.tailBuiltPath ? "固定后段已生成，可复用" : "还没有生成固定后段";
+    $("#tailBuildStatus").textContent = state.tailBuiltPath
+      ? (state.tailExportPath ? `固定后段已生成，可复用；可见成品：${basename(state.tailExportPath)}` : "固定后段已生成，可复用")
+      : "还没有生成固定后段";
   }
 }
 
@@ -595,11 +609,16 @@ $("#buildTailVideo").addEventListener("click", async () => {
       tail,
       fish,
       crf: value("crf"),
+      exportDir: state.outputDir,
     });
     state.tailBuiltPath = result.outputPath || "";
+    state.tailExportPath = result.exportPath || "";
     state.tailSignature = result.signature || "";
     $("#tailEnabled").checked = true;
-    $("#tailBuildStatus").textContent = result.warning || "固定后段已生成，可复用";
+    const visibleText = state.tailExportPath ? `；可见成品：${basename(state.tailExportPath)}` : "";
+    $("#tailBuildStatus").textContent = result.warning
+      ? `${result.warning}${visibleText}`
+      : `固定后段已生成，可复用${visibleText}`;
     await desktopMethod("writeSettings")(savedSettings());
     setStatus("固定后段已保存");
     showToast("固定后段生成成功");
@@ -704,7 +723,7 @@ $("#paperPreset").addEventListener("click", () => {
 });
 
 $("#tailMode").addEventListener("change", () => {
-  markTailNeedsBuild();
+  markTailNeedsBuild("后段模式已切换", { keepBuilt: true });
   updateTailModeUi();
 });
 
@@ -764,6 +783,7 @@ $("#renderForm").addEventListener("submit", async (event) => {
   state.tailVideoPath = saved.tailVideoPath || "";
   state.tailBackgroundPath = saved.tailBackgroundPath || "";
   state.tailBuiltPath = saved.tailBuiltPath || "";
+  state.tailExportPath = saved.tailExportPath || "";
   state.tailSignature = saved.tailSignature || "";
   $("#tailVideoName").textContent = state.tailVideoPath ? basename(state.tailVideoPath) : "尚未选择";
   $("#tailBackgroundName").textContent = state.tailBackgroundPath ? basename(state.tailBackgroundPath) : "尚未选择";

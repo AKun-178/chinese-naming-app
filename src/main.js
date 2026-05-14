@@ -86,6 +86,10 @@ function tailCacheDir() {
   return path.join(app.getPath("userData"), "fixed-tail");
 }
 
+function timestampForFileName() {
+  return new Date().toISOString().replace(/[:.]/g, "-");
+}
+
 async function readSettings() {
   try {
     const raw = await fsp.readFile(userSettingsPath(), "utf8");
@@ -103,6 +107,7 @@ async function readSettings() {
       tailBackgroundPath: settings.tailBackgroundPath || "",
       tailText: settings.tailText || "",
       tailBuiltPath: settings.tailBuiltPath || "",
+      tailExportPath: settings.tailExportPath || "",
       tailSignature: settings.tailSignature || "",
       aliyunApiKey: settings.aliyunApiKey || "",
       aliyunModel: settings.aliyunModel || "qwen-image-2.0",
@@ -122,6 +127,7 @@ async function readSettings() {
       tailBackgroundPath: "",
       tailText: "",
       tailBuiltPath: "",
+      tailExportPath: "",
       tailSignature: "",
       aliyunApiKey: "",
       aliyunModel: "qwen-image-2.0",
@@ -328,6 +334,43 @@ function runProcess(command, args, onProgress, job) {
   });
 }
 
+function runProcessCapture(command, args, job) {
+  return new Promise((resolve, reject) => {
+    if (job?.cancelled) {
+      reject(new Error("任务已中断。"));
+      return;
+    }
+
+    const child = spawn(command, args, { windowsHide: true });
+    if (job) job.children.add(child);
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+
+    const finish = (handler, value) => {
+      if (settled) return;
+      settled = true;
+      if (job) job.children.delete(child);
+      handler(value);
+    };
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on("error", (error) => {
+      finish(reject, job?.cancelled ? new Error("任务已中断。") : error);
+    });
+    child.on("close", (code) => {
+      if (job?.cancelled) finish(reject, new Error("任务已中断。"));
+      else if (code === 0) finish(resolve, { stdout, stderr });
+      else finish(reject, new Error(stderr.slice(-3000) || `命令失败：${code}`));
+    });
+  });
+}
+
 async function mediaDuration(filePath, job) {
   return new Promise((resolve, reject) => {
     if (job?.cancelled) {
@@ -368,6 +411,31 @@ async function mediaDuration(filePath, job) {
       else finish(reject, new Error(stderr || "无法读取媒体时长。"));
     });
   });
+}
+
+async function meanVolumeDb(filePath, start, duration, job) {
+  if (!(await hasAudio(filePath, job))) return null;
+  const safeStart = Math.max(0, asNumber(start, 0));
+  const safeDuration = Math.max(0.2, asNumber(duration, 0));
+  const { stderr } = await runProcessCapture(ffmpegPath(), [
+    "-hide_banner",
+    "-nostats",
+    "-ss",
+    String(safeStart),
+    "-t",
+    String(safeDuration),
+    "-i",
+    filePath,
+    "-vn",
+    "-af",
+    "volumedetect",
+    "-f",
+    "null",
+    "-",
+  ], job);
+  const matches = [...stderr.matchAll(/mean_volume:\s*(-?\d+(?:\.\d+)?)\s*dB/gu)];
+  if (!matches.length) return null;
+  return Number(matches[matches.length - 1][1]);
 }
 
 async function videoSize(filePath, job) {
@@ -689,6 +757,116 @@ async function fishAudioTts({ text, apiKey, referenceId, model, speed, outputPat
   if (!data.length) throw new Error("Fish Audio 返回了空音频。");
   await fsp.writeFile(outputPath, data);
   return outputPath;
+}
+
+function splitTtsText(text, maxChars = 260) {
+  const normalized = String(text || "")
+    .replace(/\r\n/gu, "\n")
+    .replace(/[ \t]+/gu, " ")
+    .trim();
+  if (!normalized) return [];
+
+  const sentences = normalized
+    .split(/(?<=[。！？!?；;，,、\n])/u)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const chunks = [];
+  let current = "";
+
+  const pushLongText = (value) => {
+    let rest = value;
+    while (rest.length > maxChars) {
+      chunks.push(rest.slice(0, maxChars));
+      rest = rest.slice(maxChars);
+    }
+    current = rest;
+  };
+
+  for (const sentence of sentences) {
+    const candidate = current ? `${current}${sentence}` : sentence;
+    if (candidate.length <= maxChars) {
+      current = candidate;
+    } else {
+      if (current) chunks.push(current);
+      if (sentence.length > maxChars) {
+        pushLongText(sentence);
+      } else {
+        current = sentence;
+      }
+    }
+  }
+
+  if (current) chunks.push(current);
+  return chunks;
+}
+
+function concatListLine(filePath) {
+  return `file '${String(filePath).replace(/'/gu, "'\\''")}'`;
+}
+
+async function concatAudioFiles(files, outputPath, job) {
+  if (!files.length) throw new Error("没有可合并的后段语音。");
+  if (files.length === 1) {
+    await fsp.copyFile(files[0], outputPath);
+    return outputPath;
+  }
+
+  const listPath = path.join(path.dirname(outputPath), `${path.basename(outputPath, path.extname(outputPath))}_list.txt`);
+  await fsp.writeFile(listPath, files.map(concatListLine).join("\n"));
+  await runProcess(ffmpegPath(), [
+    "-y",
+    "-f",
+    "concat",
+    "-safe",
+    "0",
+    "-i",
+    listPath,
+    "-c",
+    "copy",
+    outputPath,
+  ], null, job);
+  return outputPath;
+}
+
+async function fishAudioTtsLong({ text, apiKey, referenceId, model, speed, outputPath, workDir, job, sender }) {
+  const chunks = splitTtsText(text);
+  if (!chunks.length) throw new Error("请填写后段固定文案。");
+  await fsp.mkdir(workDir, { recursive: true });
+
+  if (chunks.length === 1) {
+    await fishAudioTts({ text: chunks[0], apiKey, referenceId, model, speed, outputPath, job });
+    return {
+      outputPath,
+      chunkCount: 1,
+    };
+  }
+
+  const chunkPaths = [];
+  for (let index = 0; index < chunks.length; index += 1) {
+    assertNotCancelled(job);
+    sender?.send("render:progress", {
+      index,
+      total: chunks.length,
+      message: `正在生成固定后段语音 ${index + 1}/${chunks.length}`,
+    });
+    const chunkPath = path.join(workDir, `fixed-tail-voice-${String(index + 1).padStart(3, "0")}.mp3`);
+    await fishAudioTts({
+      text: chunks[index],
+      apiKey,
+      referenceId,
+      model,
+      speed,
+      outputPath: chunkPath,
+      job,
+    });
+    chunkPaths.push(chunkPath);
+  }
+
+  await concatAudioFiles(chunkPaths, outputPath, job);
+  return {
+    outputPath,
+    chunkCount: chunks.length,
+  };
 }
 
 function mimeForAudio(filePath) {
@@ -1043,7 +1221,31 @@ async function renderFixedTailVideo({ videoPath, backgroundPath, voicePath, outp
     : "";
 }
 
-async function buildFixedTailVideo({ tail, fish, crf, job, sender }) {
+async function copyFixedTailToExport(outputPath, exportDir) {
+  const targetDir = String(exportDir || "").trim();
+  if (!targetDir) {
+    return {
+      path: "",
+      warning: "固定后段已保存到软件内部；如需在文件夹里看到成品，请先选择导出文件夹后再点生成/更新固定后段。",
+    };
+  }
+
+  await fsp.mkdir(targetDir, { recursive: true });
+  let targetPath = path.join(targetDir, "固定后段_已换音色.mp4");
+  try {
+    await fsp.access(targetPath, fs.constants.F_OK);
+    targetPath = path.join(targetDir, `固定后段_已换音色_${timestampForFileName()}.mp4`);
+  } catch {
+    // The simple file name is available.
+  }
+  await fsp.copyFile(outputPath, targetPath);
+  return {
+    path: targetPath,
+    warning: "",
+  };
+}
+
+async function buildFixedTailVideo({ tail, fish, crf, exportDir, job, sender }) {
   const videoPath = String(tail?.videoPath || "").trim();
   const backgroundPath = String(tail?.backgroundPath || "").trim();
   const text = String(tail?.text || "").trim();
@@ -1062,13 +1264,16 @@ async function buildFixedTailVideo({ tail, fish, crf, job, sender }) {
   const id = signature.slice(0, 16);
   const voicePath = path.join(cacheDir, `fixed-tail-${id}.mp3`);
   const outputPath = path.join(cacheDir, `fixed-tail-${id}.mp4`);
+  const workDir = path.join(os.tmpdir(), `fixed-tail-${id}`);
 
   if (fs.existsSync(outputPath)) {
+    const exportCopy = await copyFixedTailToExport(outputPath, exportDir);
     return {
       outputPath,
+      exportPath: exportCopy.path,
       signature,
       reused: true,
-      warning: "",
+      warning: exportCopy.warning,
     };
   }
 
@@ -1077,14 +1282,16 @@ async function buildFixedTailVideo({ tail, fish, crf, job, sender }) {
     total: 1,
     message: "正在生成固定后段语音",
   });
-  await fishAudioTts({
+  const voiceResult = await fishAudioTtsLong({
     text,
     apiKey: fish.apiKey,
     referenceId: fish.referenceId,
     model: fish.model,
     speed: fish.speed,
     outputPath: voicePath,
+    workDir,
     job,
+    sender,
   });
 
   sender?.send("render:progress", {
@@ -1100,12 +1307,19 @@ async function buildFixedTailVideo({ tail, fish, crf, job, sender }) {
     crf,
     job,
   });
+  const exportCopy = await copyFixedTailToExport(outputPath, exportDir);
+  const warnings = [
+    voiceResult.chunkCount > 1 ? `后段文案较长，已自动分成 ${voiceResult.chunkCount} 段生成语音。` : "",
+    warning,
+    exportCopy.warning,
+  ].filter(Boolean);
 
   return {
     outputPath,
+    exportPath: exportCopy.path,
     signature,
     reused: false,
-    warning,
+    warning: warnings.join(" "),
   };
 }
 
@@ -1138,6 +1352,40 @@ async function validateTailForBatch(tail, fish) {
   return builtPath;
 }
 
+function volumeFactorFromDb(db) {
+  return Math.pow(10, db / 20);
+}
+
+function describeVolumeAdjustment(db) {
+  if (db < 0) return `降低 ${Math.abs(db).toFixed(1)} dB`;
+  return `提高 ${db.toFixed(1)} dB`;
+}
+
+async function tailVolumeAdjustment({ frontPath, tailPath, frontDuration, tailDuration, job }) {
+  const frontWindow = Math.min(5, Math.max(0.5, frontDuration - 0.05));
+  const tailWindow = Math.min(5, Math.max(0.5, tailDuration - 0.05));
+  const frontStart = Math.max(0, frontDuration - frontWindow);
+  const [frontDb, tailDb] = await Promise.all([
+    meanVolumeDb(frontPath, frontStart, frontWindow, job),
+    meanVolumeDb(tailPath, 0, tailWindow, job),
+  ]);
+
+  if (!Number.isFinite(frontDb) || !Number.isFinite(tailDb)) {
+    return {
+      db: 0,
+      warning: "固定后段音量检测失败，已保持原音量。",
+    };
+  }
+
+  const rawDb = frontDb - tailDb;
+  const db = clamp(rawDb, -10, 6);
+  const limited = Math.abs(db - rawDb) > 0.05;
+  const warning = Math.abs(db) < 0.5
+    ? ""
+    : `固定后段音量已自动${describeVolumeAdjustment(db)}（前段 ${frontDb.toFixed(1)} dB，后段 ${tailDb.toFixed(1)} dB${limited ? "，已按安全范围限制" : ""}）。`;
+  return { db, warning };
+}
+
 async function concatWithFixedTail({ frontPath, tailPath, outputPath, crf, job }) {
   assertNotCancelled(job);
   const size = await videoSize(frontPath, job);
@@ -1147,11 +1395,23 @@ async function concatWithFixedTail({ frontPath, tailPath, outputPath, crf, job }
   const height = Math.max(2, Math.floor(size.height / 2) * 2);
   const scalePad = `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p`;
   const safeCrf = Math.round(clamp(asNumber(crf, 15), 10, 35));
+  let volumeInfo = { db: 0, warning: "" };
+  try {
+    volumeInfo = await tailVolumeAdjustment({ frontPath, tailPath, frontDuration, tailDuration, job });
+  } catch (error) {
+    volumeInfo = {
+      db: 0,
+      warning: `固定后段音量检测失败，已保持原音量：${error.message || String(error)}`,
+    };
+  }
+  const tailVolumeFilter = Math.abs(volumeInfo.db) >= 0.05
+    ? `volume=${volumeFactorFromDb(volumeInfo.db).toFixed(4)},`
+    : "";
   const filterComplex =
     `[0:v]trim=0:${frontDuration},setpts=PTS-STARTPTS,${scalePad}[v0];` +
     `[1:v]trim=0:${tailDuration},setpts=PTS-STARTPTS,${scalePad}[v1];` +
     `[0:a]atrim=0:${frontDuration},asetpts=PTS-STARTPTS,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a0];` +
-    `[1:a]atrim=0:${tailDuration},asetpts=PTS-STARTPTS,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a1];` +
+    `[1:a]atrim=0:${tailDuration},asetpts=PTS-STARTPTS,aresample=48000,${tailVolumeFilter}aformat=sample_fmts=fltp:channel_layouts=stereo[a1];` +
     "[v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]";
 
   await runProcess(ffmpegPath(), [
@@ -1185,7 +1445,11 @@ async function concatWithFixedTail({ frontPath, tailPath, outputPath, crf, job }
     outputPath,
   ], null, job);
 
-  return outputPath;
+  return {
+    outputPath,
+    warning: volumeInfo.warning,
+    volumeAdjustmentDb: volumeInfo.db,
+  };
 }
 
 ipcMain.handle("settings:read", readSettings);
@@ -1278,13 +1542,14 @@ ipcMain.handle("tail:build", async (event, payload) => {
   const renderJob = createRenderJob(event.sender);
   activeRenderJob = renderJob;
   try {
-    const result = await buildFixedTailVideo({
-      tail: payload.tail,
-      fish: payload.fish,
-      crf: payload.crf,
-      job: renderJob,
-      sender: event.sender,
-    });
+      const result = await buildFixedTailVideo({
+        tail: payload.tail,
+        fish: payload.fish,
+        crf: payload.crf,
+        exportDir: payload.exportDir,
+        job: renderJob,
+        sender: event.sender,
+      });
     event.sender.send("render:progress", {
       index: 1,
       total: 1,
@@ -1380,13 +1645,15 @@ ipcMain.handle("render:batch", async (event, payload) => {
           name,
           message: `正在拼接 ${name} 的固定后段`,
         });
-        composedPath = await concatWithFixedTail({
+        const tailResult = await concatWithFixedTail({
           frontPath,
           tailPath: fixedTailPath,
           outputPath: path.join(jobDir, `${safeName(name)}_composed.mp4`),
           crf: payload.settings?.crf,
           job: renderJob,
         });
+        composedPath = tailResult.outputPath;
+        if (tailResult.warning) warnings.push(`${name}：${tailResult.warning}`);
       }
 
       let overlayFilePath = null;
