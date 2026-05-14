@@ -5,11 +5,16 @@ on:
   push:
     branches:
       - main
+    tags:
+      - "v*"
     paths:
       - "package.json"
       - "package-lock.json"
       - "src/**"
       - ".github/workflows/build-windows.yml"
+
+permissions:
+  contents: write
 
 jobs:
   build-windows:
@@ -45,3 +50,15 @@ jobs:
             dist/*.blockmap
             dist/latest.yml
           if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: 视频姓名批量替换 ${{ github.ref_name }}
+          body: |
+            Windows 版本安装包。
+
+            下载下面的 `.exe` 文件后打开安装即可。第一次运行时，如果 Windows 提示未知发布者，请选择“更多信息”后继续运行。
+          files: |
+            dist/*.exe
