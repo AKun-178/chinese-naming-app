@@ -73,6 +73,10 @@ function looksLikeDate(text) {
   return /(\d{4}|\d{6,8}|年|月|日|号)/u.test(String(text || ""));
 }
 
+function birthdayDigitsFromText(text) {
+  return normalizeBirthday(text).birthdayDigits.replace(/\D/gu, "");
+}
+
 function normalizeBirthday(valueText) {
   const raw = String(valueText || "").trim();
   if (!raw) return { birthdayText: "", birthdayDigits: "" };
@@ -97,6 +101,17 @@ function normalizeBirthday(valueText) {
   };
 }
 
+function extractBirthdayTokens(tokens, startIndex) {
+  const maxLength = Math.min(6, tokens.length - startIndex);
+  for (let length = 1; length <= maxLength; length += 1) {
+    const candidate = tokens.slice(startIndex, startIndex + length).join("");
+    if (birthdayDigitsFromText(candidate).length === 8) {
+      return { value: candidate, nextIndex: startIndex + length };
+    }
+  }
+  return { value: tokens[startIndex] || "", nextIndex: startIndex + 1 };
+}
+
 function makeCustomer(parts, index) {
   const name = String(parts[0] || "").trim();
   const birthday = normalizeBirthday(parts[1] || "");
@@ -112,15 +127,40 @@ function makeCustomer(parts, index) {
   };
 }
 
+function customerFromSpaceLine(clean, index) {
+  const tokens = clean.split(/\s+/u).map((part) => part.trim()).filter(Boolean);
+  if (tokens.length < 2 || !looksLikeDate(tokens[1])) return null;
+
+  const birthday = extractBirthdayTokens(tokens, 1);
+  const tailTokens = tokens.slice(birthday.nextIndex);
+  const masterIndex = tailTokens.findIndex((part) => /道长$/u.test(part));
+  const dateTokens = masterIndex >= 0 ? tailTokens.slice(0, masterIndex) : tailTokens;
+  const masterName = masterIndex >= 0 ? tailTokens[masterIndex] : "";
+
+  return makeCustomer([
+    tokens[0],
+    birthday.value,
+    dateTokens.join("") || todayChineseDate(),
+    masterName,
+  ], index);
+}
+
 function customerRows() {
   const rows = [];
   for (const line of $("#names").value.split(/\r?\n/u)) {
     const clean = line.trim();
     if (!clean) continue;
 
-    const parts = clean.split(/[,\uFF0C，\t|]/u).map((part) => part.trim());
+    const parts = clean.split(/[,\uFF0C，、;；\t|]/u).map((part) => part.trim());
     const filledParts = parts.filter(Boolean);
-    if (filledParts.length > 1 && !looksLikeDate(filledParts[1])) {
+    if (filledParts.length <= 1) {
+      const parsed = customerFromSpaceLine(clean, rows.length);
+      if (parsed) {
+        rows.push(parsed);
+      } else {
+        rows.push(makeCustomer(parts, rows.length));
+      }
+    } else if (filledParts.length > 1 && !looksLikeDate(filledParts[1])) {
       for (const name of filledParts) {
         rows.push(makeCustomer([name], rows.length));
       }

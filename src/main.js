@@ -598,6 +598,17 @@ function dashscopeEndpoint(region) {
     : "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation";
 }
 
+function patchReferenceTime({ start, requestedEnd, duration }) {
+  const safeVideoEnd = duration > 0 ? Math.max(0, duration - 0.2) : requestedEnd;
+  const safeRangeEnd = requestedEnd > start + 0.05
+    ? Math.min(safeVideoEnd, requestedEnd)
+    : safeVideoEnd;
+  const preferred = start + 3;
+  if (safeRangeEnd > preferred + 0.2) return preferred;
+  if (safeRangeEnd > start + 0.6) return Math.max(start, safeRangeEnd - 0.5);
+  return Math.max(0, Math.min(safeVideoEnd, start));
+}
+
 async function extractPatchReference({ videoPath, settings, jobDir, name, job }) {
   assertNotCancelled(job);
   const x = Math.max(0, Math.round(asNumber(settings.x, 80)));
@@ -607,8 +618,7 @@ async function extractPatchReference({ videoPath, settings, jobDir, name, job })
   const start = Math.max(0, asNumber(settings.start, 0));
   const requestedEnd = asNumber(settings.end, 65);
   const duration = await mediaDuration(videoPath, job);
-  const targetTime = requestedEnd > start + 0.05 ? requestedEnd - 0.2 : start + 5;
-  const shotTime = Math.max(0, Math.min(duration > 0 ? Math.max(0, duration - 0.2) : targetTime, targetTime));
+  const shotTime = patchReferenceTime({ start, requestedEnd, duration });
   const cropPath = path.join(jobDir, `${safeName(name)}_ai_reference.png`);
   const scaleWidth = Math.max(512, Math.round((width / height) * 512));
   const scaleHeight = 512;
@@ -658,6 +668,7 @@ async function aliyunImageEditPatch({ videoPath, customer, settings, ai, jobDir,
     "每一行只能出现一套清晰文字，尤其第一行日期不能双写、不能有上方重影、不能留下旧日期笔画。",
     "三行文字必须控制在原字大小附近，落在原来日期、姓名、生日的位置，不要变大，不要超出黄纸，不要挤到顶部，不要重新居中排版。",
     "修图边缘必须自然融入纸张纹理，不要出现矩形贴片、色块边框或像后贴上去的一层图片。",
+    "只保留黄纸纸面和三行手写文字，不要生成或保留手指、手、笔、指甲、衣物或其他临时物体。",
     "不要改变红色印章、符号、边缘和背景。",
   ].join("");
 
@@ -679,7 +690,7 @@ async function aliyunImageEditPatch({ videoPath, customer, settings, ai, jobDir,
       },
       parameters: {
         n: 1,
-        negative_prompt: "印刷体，电脑字体，打字效果，居中排版，文字过大，文字超出黄纸，文字挤到顶部，重影，残影，拖影，旧字残留，旧日期残留，双层文字，双写日期，重复笔画，日期多一笔，14日多一笔，日字上方多一笔，多余横，多余撇，多余点，模糊笔画，矩形贴片，色块边框，边缘突兀，像粘贴图片，错别字，多余文字，水印，改变印章，改变背景，低清晰度",
+        negative_prompt: "印刷体，电脑字体，打字效果，居中排版，文字过大，文字超出黄纸，文字挤到顶部，重影，残影，拖影，旧字残留，旧日期残留，双层文字，双写日期，重复笔画，日期多一笔，14日多一笔，日字上方多一笔，多余横，多余撇，多余点，模糊笔画，手指，手，笔，指甲，衣物，临时物体，矩形贴片，色块边框，边缘突兀，像粘贴图片，错别字，多余文字，水印，改变印章，改变背景，低清晰度",
         prompt_extend: false,
         watermark: false,
         size: `${scaleWidth}*${scaleHeight}`,
