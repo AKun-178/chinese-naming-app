@@ -6,5 +6,6 @@ dist/
 .cache/
 demo-output/
 real-api-output/
+sample-renders/
 *.log
 .DS_Store

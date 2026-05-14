@@ -581,8 +581,10 @@ async function aliyunImageEditPatch({ videoPath, customer, settings, ai, jobDir,
   const lineText = lines.map((line, index) => `第${index + 1}行「${line}」`).join("，");
   const prompt = [
     "只编辑图中黄纸上的原有三行手写文字，保持黄纸颜色、纸张纹理、光照、透视、阴影和周围内容不变。",
+    "先彻底擦除原有三行文字，包括淡淡的残影、重影、拖影和旧字阴影，再写入新的三行文字。",
     `把三行原字按原来的位置、行距和大小分别替换为${lineText}。`,
     "新文字必须模仿参考图里的真实手写笔迹、笔画粗细、倾斜角度和墨色，不要像印刷字体或电脑字体。",
+    "每一行只能出现一套清晰文字，尤其第一行日期不能双写、不能有上方重影、不能留下旧日期笔画。",
     "三行文字必须控制在原字大小附近，落在原来日期、姓名、生日的位置，不要变大，不要超出黄纸，不要挤到顶部，不要重新居中排版。",
     "修图边缘必须自然融入纸张纹理，不要出现矩形贴片、色块边框或像后贴上去的一层图片。",
     "不要改变红色印章、符号、边缘和背景。",
@@ -606,7 +608,7 @@ async function aliyunImageEditPatch({ videoPath, customer, settings, ai, jobDir,
       },
       parameters: {
         n: 1,
-        negative_prompt: "印刷体，电脑字体，打字效果，居中排版，文字过大，文字超出黄纸，文字挤到顶部，矩形贴片，色块边框，边缘突兀，像粘贴图片，错别字，多余文字，水印，改变印章，改变背景，低清晰度",
+        negative_prompt: "印刷体，电脑字体，打字效果，居中排版，文字过大，文字超出黄纸，文字挤到顶部，重影，残影，拖影，旧字残留，旧日期残留，双层文字，双写日期，重复笔画，模糊笔画，矩形贴片，色块边框，边缘突兀，像粘贴图片，错别字，多余文字，水印，改变印章，改变背景，低清晰度",
         prompt_extend: false,
         watermark: false,
         size: `${scaleWidth}*${scaleHeight}`,
@@ -833,7 +835,7 @@ async function renderBaseVideo({ videoPath, name, audioClip, backgroundAudioPath
   if (duration > 0) {
     audioEnd = Math.min(duration, audioEnd);
   }
-  const crf = Math.round(clamp(asNumber(settings.crf, 18), 10, 35));
+  const crf = Math.round(clamp(asNumber(settings.crf, 15), 10, 35));
   const finalPath = outputPath || finalVideoOutputPath(videoPath, name, outputDir);
 
   const args = [
@@ -919,15 +921,14 @@ async function applyVisualPatchToVideo({ videoPath, name, overlayDataUrl, overla
   const width = Math.max(8, Math.round(asNumber(settings.width, 360)));
   const height = Math.max(8, Math.round(asNumber(settings.height, 96)));
   const { start, end } = visualTiming(settings, duration);
-  const crf = Math.round(clamp(asNumber(settings.crf, 18), 10, 35));
+  const crf = Math.round(clamp(asNumber(settings.crf, 15), 10, 35));
   const enable = `between(t\\,${start}\\,${end})`;
   const feather = Math.max(4, Math.min(18, Math.round(Math.min(width, height) * 0.08)));
   const blur = Math.max(3, Math.round(feather * 0.75));
   const filterComplex =
     `[1:v]format=rgba,scale=${width}:${height}:flags=lanczos,split[p][m];` +
     `[m]alphaextract,drawbox=x=0:y=0:w=iw:h=ih:color=black:t=${feather},boxblur=${blur}:1[mask];` +
-    "[p]colorchannelmixer=aa=0.96[p2];" +
-    "[p2][mask]alphamerge[patch];" +
+    "[p][mask]alphamerge[patch];" +
     `[0:v][patch]overlay=x=${x}:y=${y}:enable='${enable}'[v]`;
 
   await runProcess(ffmpegPath(), [
@@ -949,7 +950,7 @@ async function applyVisualPatchToVideo({ videoPath, name, overlayDataUrl, overla
     "-c:v",
     "libx264",
     "-preset",
-    "medium",
+    "slow",
     "-crf",
     String(crf),
     "-pix_fmt",
@@ -977,7 +978,7 @@ async function renderFixedTailVideo({ videoPath, backgroundPath, voicePath, outp
 
   const voiceDuration = await mediaDuration(voicePath, job);
   const safeDuration = Math.max(0.05, duration);
-  const safeCrf = Math.round(clamp(asNumber(crf, 18), 10, 35));
+  const safeCrf = Math.round(clamp(asNumber(crf, 15), 10, 35));
   const filterComplex =
     `[0:v]trim=0:${safeDuration},setpts=PTS-STARTPTS,scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1,fps=30,format=yuv420p[v];` +
     `[1:a]aresample=48000,volume=0.72,atrim=0:${safeDuration},asetpts=PTS-STARTPTS[bgm];` +
@@ -1127,7 +1128,7 @@ async function concatWithFixedTail({ frontPath, tailPath, outputPath, crf, job }
   const width = Math.max(2, Math.floor(size.width / 2) * 2);
   const height = Math.max(2, Math.floor(size.height / 2) * 2);
   const scalePad = `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p`;
-  const safeCrf = Math.round(clamp(asNumber(crf, 18), 10, 35));
+  const safeCrf = Math.round(clamp(asNumber(crf, 15), 10, 35));
   const filterComplex =
     `[0:v]trim=0:${frontDuration},setpts=PTS-STARTPTS,${scalePad}[v0];` +
     `[1:v]trim=0:${tailDuration},setpts=PTS-STARTPTS,${scalePad}[v1];` +

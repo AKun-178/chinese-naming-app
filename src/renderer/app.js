@@ -683,6 +683,7 @@ $("#paperPreset").addEventListener("click", () => {
   $("#height").value = "130";
   $("#start").value = "0";
   $("#end").value = "65";
+  $("#crf").value = "15";
   $("#fontSize").value = "16";
   $("#fontFamily").value = "hand";
   $("#visualTextTemplate").value = DEFAULT_VISUAL_TEXT_TEMPLATE;
