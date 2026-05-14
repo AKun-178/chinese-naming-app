@@ -542,9 +542,8 @@ async function extractPatchReference({ videoPath, settings, jobDir, name, job })
   const targetTime = requestedEnd > start + 0.05 ? requestedEnd - 0.2 : start + 5;
   const shotTime = Math.max(0, Math.min(duration > 0 ? Math.max(0, duration - 0.2) : targetTime, targetTime));
   const cropPath = path.join(jobDir, `${safeName(name)}_ai_reference.png`);
-  const cleanCropPath = path.join(jobDir, `${safeName(name)}_ai_reference_clean.png`);
-  const scaleWidth = Math.max(768, Math.round((width / height) * 768));
-  const scaleHeight = 768;
+  const scaleWidth = Math.max(512, Math.round((width / height) * 512));
+  const scaleHeight = 512;
   await runProcess(ffmpegPath(), [
     "-y",
     "-ss",
@@ -557,21 +556,7 @@ async function extractPatchReference({ videoPath, settings, jobDir, name, job })
     `crop=${width}:${height}:${x}:${y},scale=${scaleWidth}:${scaleHeight}:flags=lanczos`,
     cropPath,
   ], null, job);
-  const paperColor = colorToFfmpeg(settings.boxColor || "#edbd0e");
-  const cleanFilter = [
-    `drawbox=x=0:y=0:w=iw:h=ih*0.34:color=${paperColor}:t=fill`,
-    `drawbox=x=0:y=ih*0.30:w=iw:h=ih*0.35:color=${paperColor}:t=fill`,
-    `drawbox=x=0:y=ih*0.59:w=iw*0.9:h=ih*0.32:color=${paperColor}:t=fill`,
-  ].join(",");
-  await runProcess(ffmpegPath(), [
-    "-y",
-    "-i",
-    cropPath,
-    "-vf",
-    cleanFilter,
-    cleanCropPath,
-  ], null, job);
-  return { cropPath: cleanCropPath, originalCropPath: cropPath, scaleWidth, scaleHeight, width, height };
+  return { cropPath, scaleWidth, scaleHeight, width, height };
 }
 
 function visualTextForCustomer(template, customer) {
@@ -583,23 +568,24 @@ async function aliyunImageEditPatch({ videoPath, customer, settings, ai, jobDir,
   if (!ai?.apiKey) throw new Error("请填写阿里云百炼 API Key。");
   const model = ai.model || "qwen-image-2.0";
   const name = customer.name;
-  const { cropPath, originalCropPath, scaleWidth, scaleHeight, width, height } = await extractPatchReference({
+  const { cropPath, scaleWidth, scaleHeight, width, height } = await extractPatchReference({
     videoPath,
     settings,
     jobDir,
     name,
     job,
   });
-  const originalReferenceImage = await encodeImageDataUrl(originalCropPath);
-  const cleanReferenceImage = await encodeImageDataUrl(cropPath);
+  const referenceImage = await encodeImageDataUrl(cropPath);
   const visualText = visualTextForCustomer(settings.visualTextTemplate, customer);
   const lines = visualText.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean);
   const lineText = lines.map((line, index) => `第${index + 1}行「${line}」`).join("，");
+  const dateLine = lines[0] || "";
   const prompt = [
-    "第一张图用于参考原始黄纸纹理、光照和手写笔迹风格；第二张图是旧字已被黄色纸面预清理后的干净底稿。",
-    "请以第二张干净底稿为基础生成结果，只重新写入三行新文字，不要恢复第一张里的旧字痕迹。",
+    "只编辑图中黄纸上的原有三行手写文字，保持黄纸颜色、纸张纹理、光照、透视、阴影和周围内容不变。",
     "先彻底擦除原有三行文字，包括淡淡的残影、重影、拖影和旧字阴影，再写入新的三行文字。",
     `把三行原字按原来的位置、行距和大小分别替换为${lineText}。`,
+    `第一行日期必须一字不差写成「${dateLine}」，不要多写任何横、撇、点、竖或装饰笔画。`,
+    "如果第一行末尾包含“14日”，日字上方和右上方不能出现额外笔画、飞白、短横、短撇或旧字残留。",
     "新文字必须模仿参考图里的真实手写笔迹、笔画粗细、倾斜角度和墨色，不要像印刷字体或电脑字体。",
     "每一行只能出现一套清晰文字，尤其第一行日期不能双写、不能有上方重影、不能留下旧日期笔画。",
     "三行文字必须控制在原字大小附近，落在原来日期、姓名、生日的位置，不要变大，不要超出黄纸，不要挤到顶部，不要重新居中排版。",
@@ -619,13 +605,13 @@ async function aliyunImageEditPatch({ videoPath, customer, settings, ai, jobDir,
         messages: [
           {
             role: "user",
-            content: [{ image: originalReferenceImage }, { image: cleanReferenceImage }, { text: prompt }],
+            content: [{ image: referenceImage }, { text: prompt }],
           },
         ],
       },
       parameters: {
         n: 1,
-        negative_prompt: "印刷体，电脑字体，打字效果，居中排版，文字过大，文字超出黄纸，文字挤到顶部，重影，残影，拖影，旧字残留，旧日期残留，双层文字，双写日期，重复笔画，模糊笔画，矩形贴片，色块边框，边缘突兀，像粘贴图片，错别字，多余文字，水印，改变印章，改变背景，低清晰度",
+        negative_prompt: "印刷体，电脑字体，打字效果，居中排版，文字过大，文字超出黄纸，文字挤到顶部，重影，残影，拖影，旧字残留，旧日期残留，双层文字，双写日期，重复笔画，日期多一笔，14日多一笔，日字上方多一笔，多余横，多余撇，多余点，模糊笔画，矩形贴片，色块边框，边缘突兀，像粘贴图片，错别字，多余文字，水印，改变印章，改变背景，低清晰度",
         prompt_extend: false,
         watermark: false,
         size: `${scaleWidth}*${scaleHeight}`,
@@ -779,12 +765,17 @@ function finalVideoOutputPath(videoPath, name, outputDir) {
 }
 
 function atempoChain(tempo) {
-  if (tempo <= 1.001) return "";
+  const normalized = clamp(asNumber(tempo, 1), 0.05, 100);
+  if (Math.abs(normalized - 1) <= 0.001) return "";
   const parts = [];
-  let remaining = tempo;
+  let remaining = normalized;
   while (remaining > 2) {
     parts.push("atempo=2");
     remaining /= 2;
+  }
+  while (remaining < 0.5) {
+    parts.push("atempo=0.5");
+    remaining /= 0.5;
   }
   parts.push(`atempo=${remaining.toFixed(4)}`);
   return `${parts.join(",")},`;
@@ -803,13 +794,23 @@ function visualTiming(settings, duration) {
 }
 
 function voiceTempoForSegment({ name, clipDuration, segmentDuration, warnings, context }) {
-  if (clipDuration <= segmentDuration + 0.05) return 1;
+  if (Math.abs(clipDuration - segmentDuration) <= 0.05) return 1;
   const requiredTempo = clipDuration / segmentDuration;
-  if (requiredTempo <= 1.35) {
+  if (requiredTempo > 1 && requiredTempo <= 1.35) {
     warnings?.push(`${name} 的语音已自动加速 ${requiredTempo.toFixed(2)} 倍，避免${context}被截断。`);
     return requiredTempo;
   }
-  throw new Error(`${name} 的语音 ${clipDuration.toFixed(1)} 秒，可用时间只有 ${segmentDuration.toFixed(1)} 秒，放不下。请缩短 Fish 文案或提高语速。`);
+  if (requiredTempo > 1.35) {
+    throw new Error(`${name} 的语音 ${clipDuration.toFixed(1)} 秒，可用时间只有 ${segmentDuration.toFixed(1)} 秒，放不下。请缩短 Fish 文案或提高语速。`);
+  }
+
+  if (requiredTempo >= 0.7) {
+    warnings?.push(`${name} 的语音已自动放慢到 ${requiredTempo.toFixed(2)} 倍，铺满${context}。`);
+    return requiredTempo;
+  }
+
+  warnings?.push(`${name} 的语音只有 ${clipDuration.toFixed(1)} 秒，已放慢到 0.70 倍；${context}末尾可能仍有空白。`);
+  return 0.7;
 }
 
 async function renderBaseVideo({ videoPath, name, audioClip, backgroundAudioPath, settings, outputDir, outputPath, warnings, job }) {
@@ -828,13 +829,13 @@ async function renderBaseVideo({ videoPath, name, audioClip, backgroundAudioPath
     const frontEnd = duration > 0 ? duration : audioStart + Math.max(0.05, audioClipDuration);
     const availableDuration = Math.max(0.05, frontEnd - audioStart);
     if (autoAudioEnd) {
-      const segment = Math.min(availableDuration, Math.max(0.05, audioClipDuration || 0.05));
+      const segment = availableDuration;
       voiceTempo = voiceTempoForSegment({
         name,
         clipDuration: audioClipDuration,
         segmentDuration: segment,
         warnings,
-        context: "最后一句",
+        context: "前段",
       });
       audioEnd = audioStart + segment;
     } else {
@@ -945,7 +946,7 @@ async function applyVisualPatchToVideo({ videoPath, name, overlayDataUrl, overla
   const filterComplex =
     `[1:v]format=rgba,scale=${width}:${height}:flags=lanczos,split[p][m];` +
     `[m]alphaextract,drawbox=x=0:y=0:w=iw:h=ih:color=black:t=${feather},boxblur=${blur}:1[mask];` +
-    "[p][mask]alphamerge[patch];" +
+    `[p][mask]alphamerge[patch];` +
     `[0:v][patch]overlay=x=${x}:y=${y}:enable='${enable}'[v]`;
 
   await runProcess(ffmpegPath(), [
