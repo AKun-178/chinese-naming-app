@@ -537,8 +537,10 @@ async function extractPatchReference({ videoPath, settings, jobDir, name, job })
   const width = Math.max(8, Math.round(asNumber(settings.width, 360)));
   const height = Math.max(8, Math.round(asNumber(settings.height, 96)));
   const start = Math.max(0, asNumber(settings.start, 0));
+  const requestedEnd = asNumber(settings.end, 65);
   const duration = await mediaDuration(videoPath, job);
-  const shotTime = Math.max(0, Math.min(duration > 0 ? duration - 0.2 : start + 5, start + 5));
+  const targetTime = requestedEnd > start + 0.05 ? requestedEnd - 0.2 : start + 5;
+  const shotTime = Math.max(0, Math.min(duration > 0 ? Math.max(0, duration - 0.2) : targetTime, targetTime));
   const cropPath = path.join(jobDir, `${safeName(name)}_ai_reference.png`);
   const scaleWidth = Math.max(512, Math.round((width / height) * 512));
   const scaleHeight = 512;
@@ -582,6 +584,7 @@ async function aliyunImageEditPatch({ videoPath, customer, settings, ai, jobDir,
     `把三行原字按原来的位置、行距和大小分别替换为${lineText}。`,
     "新文字必须模仿参考图里的真实手写笔迹、笔画粗细、倾斜角度和墨色，不要像印刷字体或电脑字体。",
     "三行文字必须控制在原字大小附近，落在原来日期、姓名、生日的位置，不要变大，不要超出黄纸，不要挤到顶部，不要重新居中排版。",
+    "修图边缘必须自然融入纸张纹理，不要出现矩形贴片、色块边框或像后贴上去的一层图片。",
     "不要改变红色印章、符号、边缘和背景。",
   ].join("");
 
@@ -603,7 +606,7 @@ async function aliyunImageEditPatch({ videoPath, customer, settings, ai, jobDir,
       },
       parameters: {
         n: 1,
-        negative_prompt: "印刷体，电脑字体，打字效果，居中排版，文字过大，文字超出黄纸，文字挤到顶部，错别字，多余文字，水印，改变印章，改变背景，低清晰度",
+        negative_prompt: "印刷体，电脑字体，打字效果，居中排版，文字过大，文字超出黄纸，文字挤到顶部，矩形贴片，色块边框，边缘突兀，像粘贴图片，错别字，多余文字，水印，改变印章，改变背景，低清晰度",
         prompt_extend: false,
         watermark: false,
         size: `${scaleWidth}*${scaleHeight}`,
@@ -756,86 +759,121 @@ function finalVideoOutputPath(videoPath, name, outputDir) {
   return path.join(outputDir, `${path.basename(videoPath, path.extname(videoPath))}_${safeName(name)}.mp4`);
 }
 
-async function renderOne({ videoPath, name, overlayDataUrl, overlayFilePath, audioClip, backgroundAudioPath, settings, outputDir, outputPath, jobDir, job }) {
-  assertNotCancelled(job);
-  const id = crypto.randomUUID();
-  const clean = safeName(name);
-  const duration = await mediaDuration(videoPath, job);
-  const overlayPath = overlayFilePath || path.join(jobDir, `${id}_${clean}.png`);
-  if (!overlayFilePath) await writeDataUrl(overlayDataUrl, overlayPath);
+function atempoChain(tempo) {
+  if (tempo <= 1.001) return "";
+  const parts = [];
+  let remaining = tempo;
+  while (remaining > 2) {
+    parts.push("atempo=2");
+    remaining /= 2;
+  }
+  parts.push(`atempo=${remaining.toFixed(4)}`);
+  return `${parts.join(",")},`;
+}
 
-  const x = Math.max(0, Math.round(asNumber(settings.x, 80)));
-  const y = Math.max(0, Math.round(asNumber(settings.y, 80)));
-  const width = Math.max(8, Math.round(asNumber(settings.width, 360)));
-  const height = Math.max(8, Math.round(asNumber(settings.height, 96)));
+function visualTiming(settings, duration) {
   const start = Math.max(0, asNumber(settings.start, 0));
-  const end = Math.max(start + 0.05, asNumber(settings.end, duration || 99999));
+  const requestedEnd = asNumber(settings.end, 65);
+  const end = requestedEnd > start + 0.05
+    ? Math.min(duration || requestedEnd, requestedEnd)
+    : (duration || start + 65);
+  return {
+    start,
+    end: Math.max(start + 0.05, end),
+  };
+}
+
+function voiceTempoForSegment({ name, clipDuration, segmentDuration, warnings, context }) {
+  if (clipDuration <= segmentDuration + 0.05) return 1;
+  const requiredTempo = clipDuration / segmentDuration;
+  if (requiredTempo <= 1.35) {
+    warnings?.push(`${name} 的语音已自动加速 ${requiredTempo.toFixed(2)} 倍，避免${context}被截断。`);
+    return requiredTempo;
+  }
+  throw new Error(`${name} 的语音 ${clipDuration.toFixed(1)} 秒，可用时间只有 ${segmentDuration.toFixed(1)} 秒，放不下。请缩短 Fish 文案或提高语速。`);
+}
+
+async function renderBaseVideo({ videoPath, name, audioClip, backgroundAudioPath, settings, outputDir, outputPath, warnings, job }) {
+  assertNotCancelled(job);
+  const duration = await mediaDuration(videoPath, job);
   const audioStart = duration > 0
     ? Math.min(duration, Math.max(0, asNumber(settings.audioStart, 0)))
     : Math.max(0, asNumber(settings.audioStart, 0));
   const requestedAudioEnd = asNumber(settings.audioEnd, 0);
+  const autoAudioEnd = requestedAudioEnd <= audioStart;
   let audioEnd = requestedAudioEnd > audioStart ? requestedAudioEnd : audioStart;
   let audioClipDuration = 0;
+  let voiceTempo = 1;
   if (audioClip) {
     audioClipDuration = await mediaDuration(audioClip, job);
-    if (audioEnd <= audioStart) {
-      audioEnd = audioStart + Math.max(0.05, audioClipDuration || 0);
+    const frontEnd = duration > 0 ? duration : audioStart + Math.max(0.05, audioClipDuration);
+    const availableDuration = Math.max(0.05, frontEnd - audioStart);
+    if (autoAudioEnd) {
+      const segment = Math.min(availableDuration, Math.max(0.05, audioClipDuration || 0.05));
+      voiceTempo = voiceTempoForSegment({
+        name,
+        clipDuration: audioClipDuration,
+        segmentDuration: segment,
+        warnings,
+        context: "最后一句",
+      });
+      audioEnd = audioStart + segment;
+    } else {
+      audioEnd = Math.min(frontEnd, requestedAudioEnd);
+      const segment = Math.max(0.05, audioEnd - audioStart);
+      voiceTempo = voiceTempoForSegment({
+        name,
+        clipDuration: audioClipDuration,
+        segmentDuration: segment,
+        warnings,
+        context: "替换结束秒",
+      });
     }
   }
   if (duration > 0) {
     audioEnd = Math.min(duration, audioEnd);
   }
-  const boxColor = colorToFfmpeg(settings.boxColor || "black");
-  const boxAlpha = clamp(asNumber(settings.boxAlpha, 0.86), 0, 1);
   const crf = Math.round(clamp(asNumber(settings.crf, 18), 10, 35));
   const finalPath = outputPath || finalVideoOutputPath(videoPath, name, outputDir);
-  const enable = `between(t\\,${start}\\,${end})`;
 
   const args = [
     "-y",
     "-i",
     videoPath,
-    "-loop",
-    "1",
-    "-t",
-    String(duration),
-    "-i",
-    overlayPath,
   ];
 
-  let filterComplex =
-    `[0:v]drawbox=x=${x}:y=${y}:w=${width}:h=${height}:color=${boxColor}@${boxAlpha}:t=fill:enable='${enable}'[boxed];` +
-    `[1:v]format=rgba[text];[boxed][text]overlay=x=${x}:y=${y}:enable='${enable}':shortest=1[v]`;
+  let filterComplex = "[0:v]format=yuv420p[v]";
   let audioArgs = ["-map", "0:a?", "-c:a", "copy"];
   let backgroundIndex = null;
   let voiceIndex = null;
 
   if (backgroundAudioPath) {
     args.push("-stream_loop", "-1", "-i", backgroundAudioPath);
-    backgroundIndex = 2;
+    backgroundIndex = 1;
   }
 
   if (audioClip && audioEnd > audioStart) {
     const segment = audioEnd - audioStart;
     const delayMs = Math.round(audioStart * 1000);
     args.push("-i", audioClip);
-    voiceIndex = backgroundIndex ? 3 : 2;
+    voiceIndex = backgroundIndex ? 2 : 1;
+    const tempo = atempoChain(voiceTempo);
 
     if (backgroundIndex) {
       const backgroundDuration = Math.max(duration || segment, audioEnd);
       filterComplex +=
         `;[${backgroundIndex}:a]aresample=48000,volume=0.72,atrim=0:${backgroundDuration},asetpts=PTS-STARTPTS[bgm];` +
-        `[${voiceIndex}:a]aresample=48000,volume=1.35,atrim=0:${segment},asetpts=PTS-STARTPTS,apad,atrim=0:${segment},adelay=${delayMs}:all=1[rep];` +
+        `[${voiceIndex}:a]aresample=48000,volume=1.35,${tempo}atrim=0:${segment},asetpts=PTS-STARTPTS,apad,atrim=0:${segment},adelay=${delayMs}:all=1[rep];` +
         `[bgm][rep]amix=inputs=2:duration=first:dropout_transition=0[a]`;
     } else if (await hasAudio(videoPath, job)) {
       filterComplex +=
         `;[0:a]volume=enable='between(t\\,${audioStart}\\,${audioEnd})':volume=0.22[ducked];` +
-        `[${voiceIndex}:a]aresample=48000,volume=1.35,atrim=0:${segment},asetpts=PTS-STARTPTS,apad,atrim=0:${segment},adelay=${delayMs}:all=1[rep];` +
+        `[${voiceIndex}:a]aresample=48000,volume=1.35,${tempo}atrim=0:${segment},asetpts=PTS-STARTPTS,apad,atrim=0:${segment},adelay=${delayMs}:all=1[rep];` +
         `[ducked][rep]amix=inputs=2:duration=first:dropout_transition=0[a]`;
     } else {
       const audioPadDuration = Math.max(duration || segment, audioStart + segment);
       filterComplex +=
-        `;[${voiceIndex}:a]aresample=48000,volume=1.35,atrim=0:${segment},asetpts=PTS-STARTPTS,adelay=${delayMs}:all=1,apad,atrim=0:${audioPadDuration}[a]`;
+        `;[${voiceIndex}:a]aresample=48000,volume=1.35,${tempo}atrim=0:${segment},asetpts=PTS-STARTPTS,adelay=${delayMs}:all=1,apad,atrim=0:${audioPadDuration}[a]`;
     }
     audioArgs = ["-map", "[a]", "-c:a", "aac", "-b:a", "192k"];
   } else if (backgroundIndex) {
@@ -859,6 +897,7 @@ async function renderOne({ videoPath, name, overlayDataUrl, overlayFilePath, aud
     "-pix_fmt",
     "yuv420p",
     "-shortest",
+    ...(duration > 0 ? ["-t", String(duration)] : []),
     "-movflags",
     "+faststart",
     finalPath,
@@ -866,6 +905,66 @@ async function renderOne({ videoPath, name, overlayDataUrl, overlayFilePath, aud
 
   await runProcess(ffmpegPath(), args, null, job);
   return finalPath;
+}
+
+async function applyVisualPatchToVideo({ videoPath, name, overlayDataUrl, overlayFilePath, settings, outputPath, jobDir, job }) {
+  assertNotCancelled(job);
+  const id = crypto.randomUUID();
+  const patchPath = overlayFilePath || path.join(jobDir, `${id}_${safeName(name)}_visual.png`);
+  if (!overlayFilePath) await writeDataUrl(overlayDataUrl, patchPath);
+
+  const duration = await mediaDuration(videoPath, job);
+  const x = Math.max(0, Math.round(asNumber(settings.x, 80)));
+  const y = Math.max(0, Math.round(asNumber(settings.y, 80)));
+  const width = Math.max(8, Math.round(asNumber(settings.width, 360)));
+  const height = Math.max(8, Math.round(asNumber(settings.height, 96)));
+  const { start, end } = visualTiming(settings, duration);
+  const crf = Math.round(clamp(asNumber(settings.crf, 18), 10, 35));
+  const enable = `between(t\\,${start}\\,${end})`;
+  const feather = Math.max(4, Math.min(18, Math.round(Math.min(width, height) * 0.08)));
+  const blur = Math.max(3, Math.round(feather * 0.75));
+  const filterComplex =
+    `[1:v]format=rgba,scale=${width}:${height}:flags=lanczos,split[p][m];` +
+    `[m]alphaextract,drawbox=x=0:y=0:w=iw:h=ih:color=black:t=${feather},boxblur=${blur}:1[mask];` +
+    "[p]colorchannelmixer=aa=0.96[p2];" +
+    "[p2][mask]alphamerge[patch];" +
+    `[0:v][patch]overlay=x=${x}:y=${y}:enable='${enable}'[v]`;
+
+  await runProcess(ffmpegPath(), [
+    "-y",
+    "-i",
+    videoPath,
+    "-loop",
+    "1",
+    "-t",
+    String(duration),
+    "-i",
+    patchPath,
+    "-filter_complex",
+    filterComplex,
+    "-map",
+    "[v]",
+    "-map",
+    "0:a?",
+    "-c:v",
+    "libx264",
+    "-preset",
+    "medium",
+    "-crf",
+    String(crf),
+    "-pix_fmt",
+    "yuv420p",
+    "-c:a",
+    "copy",
+    "-movflags",
+    "+faststart",
+    outputPath,
+  ], null, job);
+
+  return {
+    outputPath,
+    visualRange: `${start.toFixed(1)}-${end.toFixed(1)}秒`,
+  };
 }
 
 async function renderFixedTailVideo({ videoPath, backgroundPath, voicePath, outputPath, crf, job }) {
@@ -1239,46 +1338,22 @@ ipcMain.handle("render:batch", async (event, payload) => {
         warnings.push(`${name} 没有找到同名音频文件，已只替换画面文字。`);
       }
 
-      let overlayFilePath = null;
-      let generatedByAi = false;
-      if (payload.ai?.enabled) {
-        event.sender.send("render:progress", {
-          index,
-          total: customers.length,
-          name,
-          message: `AI 正在生成 ${name} 的手写补丁`,
-        });
-        overlayFilePath = await aliyunImageEditPatch({
-          videoPath: payload.videoPath,
-          customer,
-          settings: payload.settings,
-          ai: payload.ai,
-          jobDir,
-          job: renderJob,
-        });
-        generatedByAi = true;
-      }
-
       assertNotCancelled(renderJob);
       const finalOutputPath = finalVideoOutputPath(payload.videoPath, name, outputDir);
-      const frontOutputPath = fixedTailPath
-        ? path.join(jobDir, `${safeName(name)}_front.mp4`)
-        : finalOutputPath;
-      const frontPath = await renderOne({
+      const frontOutputPath = path.join(jobDir, `${safeName(name)}_front.mp4`);
+      const frontPath = await renderBaseVideo({
         videoPath: payload.videoPath,
         name,
-        overlayDataUrl: payload.overlays?.[customer.id] || payload.overlays?.[name],
-        overlayFilePath,
         audioClip,
         backgroundAudioPath,
         settings: payload.settings,
         outputDir,
         outputPath: frontOutputPath,
-        jobDir,
+        warnings,
         job: renderJob,
       });
 
-      let outputPath = frontPath;
+      let composedPath = frontPath;
       if (fixedTailPath) {
         event.sender.send("render:progress", {
           index,
@@ -1286,16 +1361,65 @@ ipcMain.handle("render:batch", async (event, payload) => {
           name,
           message: `正在拼接 ${name} 的固定后段`,
         });
-        outputPath = await concatWithFixedTail({
+        composedPath = await concatWithFixedTail({
           frontPath,
           tailPath: fixedTailPath,
-          outputPath: finalOutputPath,
+          outputPath: path.join(jobDir, `${safeName(name)}_composed.mp4`),
           crf: payload.settings?.crf,
           job: renderJob,
         });
       }
 
-      outputs.push({ name, outputPath, audioMatched, generatedByFish, generatedByAi, tailAppended: Boolean(fixedTailPath) });
+      let overlayFilePath = null;
+      let generatedByAi = false;
+      if (payload.ai?.enabled) {
+        event.sender.send("render:progress", {
+          index,
+          total: customers.length,
+          name,
+          message: `AI 正在按完整视频生成 ${name} 的手写补丁`,
+        });
+        try {
+          overlayFilePath = await aliyunImageEditPatch({
+            videoPath: composedPath,
+            customer,
+            settings: payload.settings,
+            ai: payload.ai,
+            jobDir,
+            job: renderJob,
+          });
+          generatedByAi = true;
+        } catch (error) {
+          warnings.push(`${name} 的 AI 手写补丁生成失败，已使用本地手写兜底：${error.message || String(error)}`);
+        }
+      }
+
+      event.sender.send("render:progress", {
+        index,
+        total: customers.length,
+        name,
+        message: `正在融合 ${name} 的黄纸文字`,
+      });
+      const visualResult = await applyVisualPatchToVideo({
+        videoPath: composedPath,
+        name,
+        overlayDataUrl: payload.overlays?.[customer.id] || payload.overlays?.[name],
+        overlayFilePath,
+        settings: payload.settings,
+        outputPath: finalOutputPath,
+        jobDir,
+        job: renderJob,
+      });
+
+      outputs.push({
+        name,
+        outputPath: visualResult.outputPath,
+        audioMatched,
+        generatedByFish,
+        generatedByAi,
+        tailAppended: Boolean(fixedTailPath),
+        visualRange: visualResult.visualRange,
+      });
     }
 
     event.sender.send("render:progress", {

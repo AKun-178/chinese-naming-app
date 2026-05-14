@@ -430,7 +430,8 @@ function renderOutputs(result) {
     const audioText = output.generatedByFish ? "Fish 生成音频" : output.audioMatched ? "已换音频" : "原音频";
     const visualText = output.generatedByAi ? "AI 手写增强" : "本地手写";
     const tailText = output.tailAppended ? "已拼接固定后段" : "仅前段";
-    const stateText = `${visualText} · ${audioText} · ${tailText}`;
+    const rangeText = output.visualRange ? `换字 ${output.visualRange}` : "换字已应用";
+    const stateText = `${visualText} · ${audioText} · ${tailText} · ${rangeText}`;
     card.innerHTML = `<h3>${output.name} · ${stateText}</h3><code>${output.outputPath}</code>`;
     root.appendChild(card);
   }
@@ -681,7 +682,7 @@ $("#paperPreset").addEventListener("click", () => {
   $("#width").value = "135";
   $("#height").value = "130";
   $("#start").value = "0";
-  $("#end").value = "99999";
+  $("#end").value = "65";
   $("#fontSize").value = "16";
   $("#fontFamily").value = "hand";
   $("#visualTextTemplate").value = DEFAULT_VISUAL_TEXT_TEMPLATE;
