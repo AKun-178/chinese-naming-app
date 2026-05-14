@@ -542,8 +542,9 @@ async function extractPatchReference({ videoPath, settings, jobDir, name, job })
   const targetTime = requestedEnd > start + 0.05 ? requestedEnd - 0.2 : start + 5;
   const shotTime = Math.max(0, Math.min(duration > 0 ? Math.max(0, duration - 0.2) : targetTime, targetTime));
   const cropPath = path.join(jobDir, `${safeName(name)}_ai_reference.png`);
-  const scaleWidth = Math.max(512, Math.round((width / height) * 512));
-  const scaleHeight = 512;
+  const cleanCropPath = path.join(jobDir, `${safeName(name)}_ai_reference_clean.png`);
+  const scaleWidth = Math.max(768, Math.round((width / height) * 768));
+  const scaleHeight = 768;
   await runProcess(ffmpegPath(), [
     "-y",
     "-ss",
@@ -556,7 +557,21 @@ async function extractPatchReference({ videoPath, settings, jobDir, name, job })
     `crop=${width}:${height}:${x}:${y},scale=${scaleWidth}:${scaleHeight}:flags=lanczos`,
     cropPath,
   ], null, job);
-  return { cropPath, scaleWidth, scaleHeight, width, height };
+  const paperColor = colorToFfmpeg(settings.boxColor || "#edbd0e");
+  const cleanFilter = [
+    `drawbox=x=0:y=0:w=iw:h=ih*0.34:color=${paperColor}:t=fill`,
+    `drawbox=x=0:y=ih*0.30:w=iw:h=ih*0.35:color=${paperColor}:t=fill`,
+    `drawbox=x=0:y=ih*0.59:w=iw*0.9:h=ih*0.32:color=${paperColor}:t=fill`,
+  ].join(",");
+  await runProcess(ffmpegPath(), [
+    "-y",
+    "-i",
+    cropPath,
+    "-vf",
+    cleanFilter,
+    cleanCropPath,
+  ], null, job);
+  return { cropPath: cleanCropPath, originalCropPath: cropPath, scaleWidth, scaleHeight, width, height };
 }
 
 function visualTextForCustomer(template, customer) {
@@ -568,19 +583,21 @@ async function aliyunImageEditPatch({ videoPath, customer, settings, ai, jobDir,
   if (!ai?.apiKey) throw new Error("请填写阿里云百炼 API Key。");
   const model = ai.model || "qwen-image-2.0";
   const name = customer.name;
-  const { cropPath, scaleWidth, scaleHeight, width, height } = await extractPatchReference({
+  const { cropPath, originalCropPath, scaleWidth, scaleHeight, width, height } = await extractPatchReference({
     videoPath,
     settings,
     jobDir,
     name,
     job,
   });
-  const referenceImage = await encodeImageDataUrl(cropPath);
+  const originalReferenceImage = await encodeImageDataUrl(originalCropPath);
+  const cleanReferenceImage = await encodeImageDataUrl(cropPath);
   const visualText = visualTextForCustomer(settings.visualTextTemplate, customer);
   const lines = visualText.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean);
   const lineText = lines.map((line, index) => `第${index + 1}行「${line}」`).join("，");
   const prompt = [
-    "只编辑图中黄纸上的原有三行手写文字，保持黄纸颜色、纸张纹理、光照、透视、阴影和周围内容不变。",
+    "第一张图用于参考原始黄纸纹理、光照和手写笔迹风格；第二张图是旧字已被黄色纸面预清理后的干净底稿。",
+    "请以第二张干净底稿为基础生成结果，只重新写入三行新文字，不要恢复第一张里的旧字痕迹。",
     "先彻底擦除原有三行文字，包括淡淡的残影、重影、拖影和旧字阴影，再写入新的三行文字。",
     `把三行原字按原来的位置、行距和大小分别替换为${lineText}。`,
     "新文字必须模仿参考图里的真实手写笔迹、笔画粗细、倾斜角度和墨色，不要像印刷字体或电脑字体。",
@@ -602,7 +619,7 @@ async function aliyunImageEditPatch({ videoPath, customer, settings, ai, jobDir,
         messages: [
           {
             role: "user",
-            content: [{ image: referenceImage }, { text: prompt }],
+            content: [{ image: originalReferenceImage }, { image: cleanReferenceImage }, { text: prompt }],
           },
         ],
       },
