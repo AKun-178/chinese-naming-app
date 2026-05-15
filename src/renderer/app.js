@@ -101,6 +101,18 @@ function normalizeBirthday(valueText) {
   };
 }
 
+function normalizeDate(valueText) {
+  const raw = String(valueText || "").trim();
+  if (!raw) return "";
+  const compact = raw.replace(/\s+/gu, "");
+  let match = /^(\d{4})(\d{2})(\d{2})$/u.exec(compact);
+  if (!match) {
+    match = /(\d{4})\D+(\d{1,2})\D+(\d{1,2})/u.exec(compact);
+  }
+  if (!match) return compact;
+  return `${match[1]}年${Number(match[2])}月${Number(match[3])}日`;
+}
+
 function extractBirthdayTokens(tokens, startIndex) {
   const maxLength = Math.min(6, tokens.length - startIndex);
   for (let length = 1; length <= maxLength; length += 1) {
@@ -122,7 +134,7 @@ function makeCustomer(parts, index) {
     birthday: birthday.birthdayText,
     birthdayText: birthday.birthdayText,
     birthdayDigits: birthday.birthdayDigits,
-    date: String(parts[2] || "").trim() || todayChineseDate(),
+    date: normalizeDate(parts[2] || "") || todayChineseDate(),
     masterName: String(parts[3] || "").trim().replace(/道长$/u, "") || "天一",
   };
 }
@@ -750,6 +762,8 @@ $("#paperPreset").addEventListener("click", () => {
   $("#boxColor").value = "#edbd0e";
   $("#boxAlpha").value = "0";
   $("#align").value = "center";
+  $("#audioStart").value = "0";
+  $("#audioEnd").value = "13";
   $("#fishTextTemplate").value = DEFAULT_FISH_TEXT_TEMPLATE;
   setStatus("黄纸位置预设已恢复");
 });

@@ -212,6 +212,18 @@ function normalizeBirthday(valueText) {
   };
 }
 
+function normalizeDate(valueText) {
+  const raw = String(valueText || "").trim();
+  if (!raw) return "";
+  const compact = raw.replace(/\s+/gu, "");
+  let match = /^(\d{4})(\d{2})(\d{2})$/u.exec(compact);
+  if (!match) {
+    match = /(\d{4})\D+(\d{1,2})\D+(\d{1,2})/u.exec(compact);
+  }
+  if (!match) return compact;
+  return `${match[1]}年${Number(match[2])}月${Number(match[3])}日`;
+}
+
 function normalizeCustomer(input, index) {
   if (typeof input === "string") {
     const birthday = normalizeBirthday("");
@@ -236,7 +248,7 @@ function normalizeCustomer(input, index) {
     birthday: birthday.birthdayText,
     birthdayText: birthday.birthdayText,
     birthdayDigits: birthday.birthdayDigits,
-    date: String(input?.date || "").trim() || todayChineseDate(),
+    date: normalizeDate(input?.date || "") || todayChineseDate(),
     masterName: String(input?.masterName || "").trim().replace(/道长$/u, "") || "天一",
   };
 }
@@ -641,6 +653,51 @@ function visualTextForCustomer(template, customer) {
   return applyTemplate(template || DEFAULT_VISUAL_TEXT_TEMPLATE, customer);
 }
 
+function lightenDarkStrokesFilter(amount = 0.18, threshold = 135) {
+  const luma = "0.299*r(X,Y)+0.587*g(X,Y)+0.114*b(X,Y)";
+  const lift = (channel) => (
+    `if(lt(${luma},${threshold}),min(255,${channel}(X,Y)+(255-${channel}(X,Y))*${amount}),${channel}(X,Y))`
+  );
+  return `geq=r='${lift("r")}':g='${lift("g")}':b='${lift("b")}':a='alpha(X,Y)'`;
+}
+
+function rightEdgeCleanupRects(width, height) {
+  const toRect = ({ x, y, w, h, sourceX }) => {
+    const rectWidth = Math.max(4, Math.round(width * w));
+    const rectHeight = Math.max(4, Math.round(height * h));
+    const rectX = clamp(Math.round(width * x), 0, Math.max(0, width - rectWidth));
+    const rectY = clamp(Math.round(height * y), 0, Math.max(0, height - rectHeight));
+    const copyX = clamp(Math.round(width * sourceX), 0, Math.max(0, width - rectWidth));
+    return { x: rectX, y: rectY, width: rectWidth, height: rectHeight, sourceX: copyX };
+  };
+
+  return [
+    toRect({ x: 0.86, y: 0.3, w: 0.12, h: 0.16, sourceX: 0.74 }),
+    toRect({ x: 0.84, y: 0.72, w: 0.14, h: 0.16, sourceX: 0.72 }),
+  ];
+}
+
+async function cleanRightEdgeArtifacts({ inputPath, outputPath, width, height, job }) {
+  const [top, bottom] = rightEdgeCleanupRects(width, height);
+  const filter =
+    `[0:v]format=rgba,split=3[base][s1][s2];` +
+    `[s1]crop=${top.width}:${top.height}:${top.sourceX}:${top.y}[p1];` +
+    `[s2]crop=${bottom.width}:${bottom.height}:${bottom.sourceX}:${bottom.y}[p2];` +
+    `[base][p1]overlay=${top.x}:${top.y}[tmp];` +
+    `[tmp][p2]overlay=${bottom.x}:${bottom.y},format=rgba[out]`;
+
+  await runProcess(ffmpegPath(), [
+    "-y",
+    "-i",
+    inputPath,
+    "-filter_complex",
+    filter,
+    "-map",
+    "[out]",
+    outputPath,
+  ], null, job);
+}
+
 async function aliyunImageEditPatch({ videoPath, customer, settings, ai, jobDir, job }) {
   assertNotCancelled(job);
   if (!ai?.apiKey) throw new Error("请填写阿里云百炼 API Key。");
@@ -656,21 +713,18 @@ async function aliyunImageEditPatch({ videoPath, customer, settings, ai, jobDir,
   const referenceImage = await encodeImageDataUrl(cropPath);
   const visualText = visualTextForCustomer(settings.visualTextTemplate, customer);
   const lines = visualText.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean);
-  const lineText = lines.map((line, index) => `第${index + 1}行「${line}」`).join("，");
+  const lineText = lines.map((line, index) => `第${index + 1}行: ${line}`).join("\n");
   const dateLine = lines[0] || "";
   const prompt = [
-    "只编辑图中黄纸上的原有三行手写文字，保持黄纸颜色、纸张纹理、光照、透视、阴影和周围内容不变。",
-    "先彻底擦除原有三行文字，包括淡淡的残影、重影、拖影和旧字阴影，再写入新的三行文字。",
-    `把三行原字按原来的位置、行距和大小分别替换为${lineText}。`,
-    `第一行日期必须一字不差写成「${dateLine}」，不要多写任何横、撇、点、竖或装饰笔画。`,
-    "如果第一行末尾包含“14日”，日字上方和右上方不能出现额外笔画、飞白、短横、短撇或旧字残留。",
-    "新文字必须模仿参考图里的真实手写笔迹、笔画粗细、倾斜角度和墨色，不要像印刷字体或电脑字体。",
-    "每一行只能出现一套清晰文字，尤其第一行日期不能双写、不能有上方重影、不能留下旧日期笔画。",
-    "三行文字必须控制在原字大小附近，落在原来日期、姓名、生日的位置，不要变大，不要超出黄纸，不要挤到顶部，不要重新居中排版。",
-    "修图边缘必须自然融入纸张纹理，不要出现矩形贴片、色块边框或像后贴上去的一层图片。",
-    "只保留黄纸纸面和三行手写文字，不要生成或保留手指、手、笔、指甲、衣物或其他临时物体。",
-    "不要改变红色印章、符号、边缘和背景。",
-  ].join("");
+    "任务: 只替换黄纸上的三行手写字。",
+    "目标文字如下，必须逐字一致，不能抄参考图里的旧字旧日期旧数字。",
+    lineText,
+    `第一行必须严格等于: ${dateLine}`,
+    "擦掉原三行文字后再写目标文字。不要保留旧字残影、旧日期、旧生日。",
+    "保持原来的三行位置、大小、行距、黑色手写笔迹和黄纸纹理。",
+    "禁止添加标点、引号、点、短线、额外符号或额外文字。",
+    "不要改变红色印章、符号、边缘、背景，不要生成手指、手或笔。",
+  ].join("\n");
 
   const response = await requestApi(dashscopeEndpoint(ai.region), {
     method: "POST",
@@ -690,7 +744,7 @@ async function aliyunImageEditPatch({ videoPath, customer, settings, ai, jobDir,
       },
       parameters: {
         n: 1,
-        negative_prompt: "印刷体，电脑字体，打字效果，居中排版，文字过大，文字超出黄纸，文字挤到顶部，重影，残影，拖影，旧字残留，旧日期残留，双层文字，双写日期，重复笔画，日期多一笔，14日多一笔，日字上方多一笔，多余横，多余撇，多余点，模糊笔画，手指，手，笔，指甲，衣物，临时物体，矩形贴片，色块边框，边缘突兀，像粘贴图片，错别字，多余文字，水印，改变印章，改变背景，低清晰度",
+        negative_prompt: "印刷体，电脑字体，打字效果，居中排版，文字过大，文字超出黄纸，文字挤到顶部，重影，残影，拖影，旧字残留，旧日期残留，旧姓名残留，旧生日残留，抄旧字，双层文字，双写日期，重复笔画，日期写错，月份写错，数字写错，14日多一笔，日字上方多一笔，多余横，多余撇，多余点，标点，引号，逗号，句号，额外符号，模糊笔画，手指，手，笔，指甲，衣物，临时物体，矩形贴片，色块边框，边缘突兀，像粘贴图片，错别字，多余文字，水印，改变印章，改变背景，低清晰度",
         prompt_extend: false,
         watermark: false,
         size: `${scaleWidth}*${scaleHeight}`,
@@ -706,6 +760,7 @@ async function aliyunImageEditPatch({ videoPath, customer, settings, ai, jobDir,
   if (!imageUrl) throw new Error("阿里云图像编辑没有返回图片。");
 
   const rawPath = path.join(jobDir, `${safeName(name)}_ai_raw.png`);
+  const lightPath = path.join(jobDir, `${safeName(name)}_ai_patch_light.png`);
   const patchPath = path.join(jobDir, `${safeName(name)}_ai_patch.png`);
   await downloadFile(imageUrl, rawPath, job);
   assertNotCancelled(job);
@@ -714,9 +769,17 @@ async function aliyunImageEditPatch({ videoPath, customer, settings, ai, jobDir,
     "-i",
     rawPath,
     "-vf",
-    `scale=${width}:${height}:flags=lanczos,format=rgba`,
-    patchPath,
+    `scale=${width}:${height}:flags=lanczos,format=rgba,${lightenDarkStrokesFilter()}`,
+    lightPath,
   ], null, job);
+  assertNotCancelled(job);
+  await cleanRightEdgeArtifacts({
+    inputPath: lightPath,
+    outputPath: patchPath,
+    width,
+    height,
+    job,
+  });
   return patchPath;
 }
 
